@@ -1,0 +1,30 @@
+# Binaries (root level only)
+/bigquery-emulator
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Go build cache
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# DuckDB data files
+*.duckdb
+*.duckdb.wal
