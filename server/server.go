@@ -10,6 +10,7 @@ import (
 	"github.com/sathish/bigquery-emulator/pkg/job"
 	"github.com/sathish/bigquery-emulator/pkg/metadata"
 	"github.com/sathish/bigquery-emulator/pkg/query"
+	"github.com/sathish/bigquery-emulator/server/storage"
 	"go.uber.org/zap"
 )
 
@@ -33,6 +34,7 @@ type Server struct {
 	executor   *query.Executor
 	translator *query.Translator
 	jobMgr     *job.Manager
+	storageSvc *storage.Service
 	logger     *zap.Logger
 }
 
@@ -83,6 +85,9 @@ func New(cfg Config) (*Server, error) {
 	// Job manager
 	jobMgr := job.NewManager(repo, executor, translator, logger)
 
+	// Storage API service
+	storageSvc := storage.NewService(connMgr, repo, executor, logger)
+
 	s := &Server{
 		config:     cfg,
 		router:     chi.NewRouter(),
@@ -91,10 +96,12 @@ func New(cfg Config) (*Server, error) {
 		executor:   executor,
 		translator: translator,
 		jobMgr:     jobMgr,
+		storageSvc: storageSvc,
 		logger:     logger,
 	}
 
 	s.setupRoutes()
+	s.setupStorageRoutes()
 
 	logger.Info("server created",
 		zap.String("project", cfg.ProjectID),

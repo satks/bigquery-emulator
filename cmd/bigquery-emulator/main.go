@@ -68,5 +68,9 @@ func main() {
 	)
 
 	// TODO: Initialize connection manager, server, and start serving
+	logger.Info("Storage API (read/write) available on same HTTP port",
+		zap.Int("port", *port),
+		zap.String("base_path", "/v1"),
+	)
 	logger.Info("server startup not yet implemented - exiting")
 }

@@ -47,3 +47,10 @@ type PolicyTagList struct {
 type TableSchema struct {
 	Fields []FieldSchema `json:"fields"`
 }
+
+// ColumnMeta describes a result column with its name and BigQuery type.
+// Used by BuildArrowRecord to build Arrow record batches from query results.
+type ColumnMeta struct {
+	Name string // Column name
+	Type string // BigQuery type (e.g., "INT64", "STRING")
+}
