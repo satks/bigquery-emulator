@@ -19,6 +19,10 @@ func (s *Server) setupRoutes() {
 	// Health check
 	r.Get("/health", s.healthHandler)
 
+	// Mock OAuth2 token endpoint (accepts any assertion, returns dummy token)
+	r.Post("/token", s.tokenHandler)
+	r.Post("/oauth2/v4/token", s.tokenHandler)
+
 	// BigQuery REST API v2 routes
 	r.Route("/bigquery/v2/projects/{projectId}", func(r chi.Router) {
 		// Datasets
@@ -52,4 +56,16 @@ func (s *Server) setupRoutes() {
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// tokenHandler serves a mock OAuth2 token endpoint.
+// Google Cloud SDKs exchange a JWT assertion for an access token here.
+// The emulator accepts any assertion and returns a dummy bearer token.
+func (s *Server) tokenHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token": "emulator-token",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	})
 }

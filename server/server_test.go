@@ -67,6 +67,53 @@ func TestServer_Health(t *testing.T) {
 	}
 }
 
+func TestServer_TokenEndpoint(t *testing.T) {
+	cfg := Config{
+		Host:      "localhost",
+		Port:      9050,
+		ProjectID: "test-project",
+		Database:  ":memory:",
+		LogLevel:  "info",
+	}
+
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer srv.Stop(nil)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Test both /token and /oauth2/v4/token paths
+	for _, path := range []string{"/token", "/oauth2/v4/token"} {
+		resp, err := http.Post(ts.URL+path, "application/x-www-form-urlencoded", nil)
+		if err != nil {
+			t.Fatalf("POST %s error = %v", path, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("POST %s status = %d, want %d", path, resp.StatusCode, http.StatusOK)
+		}
+
+		var body map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("POST %s decode error = %v", path, err)
+		}
+
+		if body["access_token"] != "emulator-token" {
+			t.Errorf("POST %s access_token = %v, want %q", path, body["access_token"], "emulator-token")
+		}
+		if body["token_type"] != "Bearer" {
+			t.Errorf("POST %s token_type = %v, want %q", path, body["token_type"], "Bearer")
+		}
+		if body["expires_in"] != float64(3600) {
+			t.Errorf("POST %s expires_in = %v, want %v", path, body["expires_in"], 3600)
+		}
+	}
+}
+
 func TestServer_RoutesExist(t *testing.T) {
 	cfg := Config{
 		Host:      "localhost",
