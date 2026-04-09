@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/sathish/bigquery-emulator/server"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -48,9 +52,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg := zap.NewProductionConfig()
-	cfg.Level = zap.NewAtomicLevelAt(level)
-	logger, err := cfg.Build()
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.Level = zap.NewAtomicLevelAt(level)
+	logger, err := zapCfg.Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to create logger: %v\n", err)
 		os.Exit(1)
@@ -67,10 +71,38 @@ func main() {
 		zap.String("log_level", *logLevel),
 	)
 
-	// TODO: Initialize connection manager, server, and start serving
+	// Create server
+	cfg := server.Config{
+		Host:      "0.0.0.0",
+		Port:      *port,
+		GRPCPort:  *grpcPort,
+		ProjectID: *project,
+		Database:  *database,
+		LogLevel:  *logLevel,
+	}
+
+	srv, err := server.New(cfg)
+	if err != nil {
+		logger.Fatal("failed to create server", zap.Error(err))
+	}
+
 	logger.Info("Storage API (read/write) available on same HTTP port",
 		zap.Int("port", *port),
 		zap.String("base_path", "/v1"),
 	)
-	logger.Info("server startup not yet implemented - exiting")
+
+	// Listen for shutdown signals
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	logger.Info("BigQuery Emulator ready",
+		zap.String("address", fmt.Sprintf("http://0.0.0.0:%d", *port)),
+		zap.String("env_hint", fmt.Sprintf("export BIGQUERY_EMULATOR_HOST=localhost:%d", *port)),
+	)
+
+	if err := srv.Start(ctx); err != nil {
+		logger.Fatal("server error", zap.Error(err))
+	}
+
+	logger.Info("server stopped")
 }
