@@ -1,0 +1,3 @@
+// Package benchmark contains performance benchmarks for the bigquery-emulator.
+// Run with: go test -bench=. -benchmem ./tests/benchmark/...
+package benchmark
