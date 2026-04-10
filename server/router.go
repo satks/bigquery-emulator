@@ -49,6 +49,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/jobs/{jobId}", s.getJob)
 		r.Post("/jobs/{jobId}/cancel", s.cancelJob)
 		r.Get("/queries/{jobId}", s.getQueryResults)
+		r.Post("/queries", s.queriesInsert)
 	})
 }
 

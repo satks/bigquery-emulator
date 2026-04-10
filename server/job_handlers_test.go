@@ -412,3 +412,113 @@ func TestGetQueryResults_Pagination(t *testing.T) {
 		t.Error("expected no pageToken for last page")
 	}
 }
+
+func TestQueriesInsert_Success(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	body := `{"query": "SELECT id, name FROM test_dataset.users ORDER BY id"}`
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /queries error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /queries status = %d, want 200", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result["kind"] != "bigquery#queryResponse" {
+		t.Errorf("kind = %v, want bigquery#queryResponse", result["kind"])
+	}
+	if result["jobComplete"] != true {
+		t.Errorf("jobComplete = %v, want true", result["jobComplete"])
+	}
+	if result["totalRows"] != "3" {
+		t.Errorf("totalRows = %v, want '3'", result["totalRows"])
+	}
+
+	// Verify schema
+	schema, ok := result["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing or wrong type")
+	}
+	fields := schema["fields"].([]interface{})
+	if len(fields) < 2 {
+		t.Fatalf("expected at least 2 fields, got %d", len(fields))
+	}
+
+	// Verify rows
+	rows, ok := result["rows"].([]interface{})
+	if !ok {
+		t.Fatal("rows missing or wrong type")
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+
+	// Verify jobReference exists
+	jobRef, ok := result["jobReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("jobReference missing")
+	}
+	if jobRef["projectId"] != "test-project" {
+		t.Errorf("jobReference.projectId = %v, want test-project", jobRef["projectId"])
+	}
+}
+
+func TestQueriesInsert_EmptyQuery(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	body := `{"query": ""}`
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /queries error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestQueriesInsert_InvalidJSON(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString("{bad"))
+	if err != nil {
+		t.Fatalf("POST /queries error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestQueriesInsert_WithMaxResults(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	body := `{"query": "SELECT id, name FROM test_dataset.users ORDER BY id", "maxResults": 2}`
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /queries error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	rows, ok := result["rows"].([]interface{})
+	if !ok {
+		t.Fatal("rows missing")
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows (maxResults=2), got %d", len(rows))
+	}
+	if result["totalRows"] != "3" {
+		t.Errorf("totalRows = %v, want '3' (total, not page size)", result["totalRows"])
+	}
+}

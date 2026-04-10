@@ -242,3 +242,116 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 }
 
 // rowsToBQFormat and formatValue are defined in helpers.go
+
+// queriesInsertRequest represents the JSON body for POST /queries (synchronous query).
+type queriesInsertRequest struct {
+	Query        string `json:"query"`
+	UseLegacySQL *bool  `json:"useLegacySql,omitempty"`
+	MaxResults   *int   `json:"maxResults,omitempty"`
+	TimeoutMs    *int   `json:"timeoutMs,omitempty"`
+}
+
+// queriesInsert handles POST /bigquery/v2/projects/{projectId}/queries
+// This is BigQuery's synchronous query API — runs the query and returns results inline.
+func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectId")
+
+	var req queriesInsertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierror.NewBadRequestError("Invalid JSON body: " + err.Error()).WriteResponse(w)
+		return
+	}
+
+	if req.Query == "" {
+		apierror.NewBadRequestError("query field is required").WriteResponse(w)
+		return
+	}
+
+	// Translate BQ SQL to DuckDB SQL
+	translated, err := s.translator.Translate(req.Query)
+	if err != nil {
+		apierror.NewBadRequestError("SQL translation error: " + err.Error()).WriteResponse(w)
+		return
+	}
+
+	// Execute synchronously
+	result, err := s.executor.Query(r.Context(), translated)
+	if err != nil {
+		// Submit as job so caller gets a jobReference with error details
+		config := metadata.JobConfig{
+			JobType: "QUERY",
+			Query:   &metadata.QueryConfig{Query: req.Query},
+		}
+		job, submitErr := s.jobMgr.Submit(r.Context(), projectID, config)
+		if submitErr != nil {
+			apierror.NewInternalError("Query failed: " + err.Error()).WriteResponse(w)
+			return
+		}
+		// Return partial response with jobComplete=false so SDK retries via getQueryResults
+		resp := map[string]interface{}{
+			"kind": "bigquery#queryResponse",
+			"jobReference": map[string]interface{}{
+				"projectId": projectID,
+				"jobId":     job.JobID,
+			},
+			"jobComplete": false,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Apply maxResults if set
+	rows := result.Rows
+	maxResults := len(rows)
+	if req.MaxResults != nil && *req.MaxResults > 0 && *req.MaxResults < maxResults {
+		maxResults = *req.MaxResults
+		rows = rows[:maxResults]
+	}
+
+	// Build response
+	resp := map[string]interface{}{
+		"kind":        "bigquery#queryResponse",
+		"jobComplete": true,
+		"totalRows":   fmt.Sprintf("%d", result.TotalRows),
+	}
+
+	// We still need a jobReference — create a completed job record
+	config := metadata.JobConfig{
+		JobType: "QUERY",
+		Query:   &metadata.QueryConfig{Query: req.Query},
+	}
+	job, _ := s.jobMgr.Submit(r.Context(), projectID, config)
+	if job != nil {
+		resp["jobReference"] = map[string]interface{}{
+			"projectId": projectID,
+			"jobId":     job.JobID,
+		}
+	}
+
+	// Schema
+	if len(result.Schema) > 0 {
+		fields := make([]map[string]interface{}, len(result.Schema))
+		for i, col := range result.Schema {
+			fields[i] = map[string]interface{}{
+				"name": col.Name,
+				"type": col.Type,
+				"mode": "NULLABLE",
+			}
+		}
+		resp["schema"] = map[string]interface{}{
+			"fields": fields,
+		}
+	}
+
+	// Rows in BQ format
+	resp["rows"] = rowsToBQFormat(rows)
+
+	// Page token if truncated
+	if len(result.Rows) > maxResults {
+		resp["pageToken"] = fmt.Sprintf("%d", maxResults)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
