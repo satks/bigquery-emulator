@@ -1,9 +1,12 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,6 +50,35 @@ func rowsToBQFormat(rows [][]interface{}) []map[string]interface{} {
 		bqRows[i] = map[string]interface{}{"f": fields}
 	}
 	return bqRows
+}
+
+// generateEtag generates a deterministic etag from a resource identifier.
+func generateEtag(id string) string {
+	h := sha256.Sum256([]byte(id))
+	return base64.StdEncoding.EncodeToString(h[:])[:16]
+}
+
+// encodePageToken encodes an integer offset as an opaque base64 page token.
+// The BigQuery API returns opaque tokens; SDKs pass them back verbatim.
+func encodePageToken(offset int) string {
+	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", offset)))
+}
+
+// decodePageToken decodes an opaque base64 page token back to an integer offset.
+// Returns 0 if the token is empty or invalid.
+func decodePageToken(token string) int {
+	if token == "" {
+		return 0
+	}
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return 0
+	}
+	val, err := strconv.Atoi(string(decoded))
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 // formatValue converts a Go value to a string representation for BQ JSON output.

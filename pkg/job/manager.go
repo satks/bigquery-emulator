@@ -68,6 +68,14 @@ func (m *Manager) Submit(ctx context.Context, projectID string, config metadata.
 	m.jobs[key] = job
 	m.mu.Unlock()
 
+	// For LOAD and EXTRACT jobs, mark as DONE immediately (emulator stub)
+	if config.JobType == "LOAD" || config.JobType == "EXTRACT" {
+		job.Status.State = metadata.JobStateDone
+		job.StartTime = &now
+		job.EndTime = &now
+		_ = m.repo.UpdateJob(ctx, *job)
+	}
+
 	// Return a copy BEFORE launching goroutine to avoid data races
 	cp := *job
 

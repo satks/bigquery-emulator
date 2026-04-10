@@ -529,6 +529,109 @@ func TestListTables_WithTables(t *testing.T) {
 	}
 }
 
+func TestListTables_Pagination(t *testing.T) {
+	s := setupTableTestServer(t)
+	createTestDataset(t, s.repo, "test-project", "test_dataset")
+
+	// Create 5 tables
+	for i := 1; i <= 5; i++ {
+		body := map[string]interface{}{
+			"tableReference": map[string]string{
+				"projectId": "test-project",
+				"datasetId": "test_dataset",
+				"tableId":   fmt.Sprintf("page_table_%d", i),
+			},
+			"schema": map[string]interface{}{
+				"fields": []map[string]interface{}{
+					{"name": "id", "type": "INT64", "mode": "REQUIRED"},
+				},
+			},
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/bigquery/v2/projects/test-project/datasets/test_dataset/tables", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("create table %d failed: %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+
+	// Get first page (maxResults=2)
+	req := httptest.NewRequest(http.MethodGet, "/bigquery/v2/projects/test-project/datasets/test_dataset/tables?maxResults=2", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	totalItems := int(resp["totalItems"].(float64))
+	if totalItems != 5 {
+		t.Errorf("expected totalItems=5, got %d", totalItems)
+	}
+
+	tables := resp["tables"].([]interface{})
+	if len(tables) != 2 {
+		t.Fatalf("first page expected 2 tables, got %d", len(tables))
+	}
+
+	// Should have a nextPageToken
+	nextPageToken, ok := resp["nextPageToken"].(string)
+	if !ok || nextPageToken == "" {
+		t.Fatal("expected nextPageToken for first page")
+	}
+
+	// Get second page using the nextPageToken
+	req = httptest.NewRequest(http.MethodGet, "/bigquery/v2/projects/test-project/datasets/test_dataset/tables?maxResults=2&pageToken="+nextPageToken, nil)
+	w = httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp2 map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	tables2 := resp2["tables"].([]interface{})
+	if len(tables2) != 2 {
+		t.Fatalf("second page expected 2 tables, got %d", len(tables2))
+	}
+
+	nextPageToken2, ok := resp2["nextPageToken"].(string)
+	if !ok || nextPageToken2 == "" {
+		t.Fatal("expected nextPageToken for second page")
+	}
+
+	// Get third page (last page)
+	req = httptest.NewRequest(http.MethodGet, "/bigquery/v2/projects/test-project/datasets/test_dataset/tables?maxResults=2&pageToken="+nextPageToken2, nil)
+	w = httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	var resp3 map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp3); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	tables3 := resp3["tables"].([]interface{})
+	if len(tables3) != 1 {
+		t.Fatalf("third page expected 1 table, got %d", len(tables3))
+	}
+
+	// Should NOT have a nextPageToken on the last page
+	if _, has := resp3["nextPageToken"]; has {
+		t.Error("expected no nextPageToken on last page")
+	}
+}
+
 func TestDeleteTable_Success(t *testing.T) {
 	s := setupTableTestServer(t)
 	createTestDataset(t, s.repo, "test-project", "test_dataset")

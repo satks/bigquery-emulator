@@ -24,7 +24,14 @@ func (s *Server) setupRoutes() {
 	r.Post("/oauth2/v4/token", s.tokenHandler)
 
 	// BigQuery REST API v2 routes
+
+	// Project listing (no {projectId} param)
+	r.Get("/bigquery/v2/projects", s.listProjects)
+
 	r.Route("/bigquery/v2/projects/{projectId}", func(r chi.Router) {
+		// Project detail (GET on the projectId itself)
+		r.Get("/", s.getProject)
+
 		// Datasets
 		r.Get("/datasets", s.listDatasets)
 		r.Post("/datasets", s.createDataset)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,12 +44,15 @@ type fieldRequest struct {
 // tableResponse represents the BigQuery API JSON format for a table.
 type tableResponse struct {
 	Kind           string                 `json:"kind"`
+	Etag           string                 `json:"etag"`
 	ID             string                 `json:"id"`
+	SelfLink       string                 `json:"selfLink"`
 	TableReference map[string]string      `json:"tableReference"`
 	Type           string                 `json:"type"`
 	Schema         *schemaResponse        `json:"schema,omitempty"`
 	Description    string                 `json:"description,omitempty"`
 	Labels         map[string]string      `json:"labels,omitempty"`
+	Location       string                 `json:"location"`
 	CreationTime   string                 `json:"creationTime"`
 	LastModified   string                 `json:"lastModifiedTime"`
 	NumBytes       string                 `json:"numBytes"`
@@ -72,9 +76,10 @@ type fieldResponse struct {
 
 // tableListResponse represents the BigQuery API JSON format for listing tables.
 type tableListResponse struct {
-	Kind       string          `json:"kind"`
-	Tables     []tableResponse `json:"tables"`
-	TotalItems int             `json:"totalItems"`
+	Kind          string          `json:"kind"`
+	Tables        []tableResponse `json:"tables"`
+	TotalItems    int             `json:"totalItems"`
+	NextPageToken string          `json:"nextPageToken,omitempty"`
 }
 
 // createTable handles POST /bigquery/v2/projects/{projectId}/datasets/{datasetId}/tables
@@ -190,15 +195,44 @@ func (s *Server) listTables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tableResponses := make([]tableResponse, 0, len(tables))
-	for i := range tables {
-		tableResponses = append(tableResponses, buildTableResponse(&tables[i]))
+	// Parse pagination parameters
+	maxResults := 1000
+	if mr := r.URL.Query().Get("maxResults"); mr != "" {
+		if parsed, err := strconv.Atoi(mr); err == nil && parsed > 0 {
+			maxResults = parsed
+		}
+	}
+
+	startIndex := 0
+	if pt := r.URL.Query().Get("pageToken"); pt != "" {
+		startIndex = decodePageToken(pt)
+	}
+
+	// Apply pagination
+	totalItems := len(tables)
+	if startIndex > totalItems {
+		startIndex = totalItems
+	}
+	endIndex := startIndex + maxResults
+	if endIndex > totalItems {
+		endIndex = totalItems
+	}
+	pageTables := tables[startIndex:endIndex]
+
+	tableResponses := make([]tableResponse, 0, len(pageTables))
+	for i := range pageTables {
+		tableResponses = append(tableResponses, buildTableResponse(&pageTables[i]))
 	}
 
 	resp := tableListResponse{
 		Kind:       "bigquery#tableList",
 		Tables:     tableResponses,
-		TotalItems: len(tables),
+		TotalItems: totalItems,
+	}
+
+	// Set next page token if there are more results
+	if endIndex < totalItems {
+		resp.NextPageToken = encodePageToken(endIndex)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -290,8 +324,10 @@ func (s *Server) deleteTable(w http.ResponseWriter, r *http.Request) {
 // buildTableResponse converts a metadata.Table to the BigQuery API response format.
 func buildTableResponse(tbl *metadata.Table) tableResponse {
 	resp := tableResponse{
-		Kind: "bigquery#table",
-		ID:   fmt.Sprintf("%s:%s.%s", tbl.ProjectID, tbl.DatasetID, tbl.TableID),
+		Kind:     "bigquery#table",
+		Etag:     generateEtag(tbl.ProjectID + ":" + tbl.DatasetID + "." + tbl.TableID),
+		ID:       fmt.Sprintf("%s:%s.%s", tbl.ProjectID, tbl.DatasetID, tbl.TableID),
+		SelfLink: fmt.Sprintf("http://bigquery.googleapis.com/bigquery/v2/projects/%s/datasets/%s/tables/%s", tbl.ProjectID, tbl.DatasetID, tbl.TableID),
 		TableReference: map[string]string{
 			"projectId": tbl.ProjectID,
 			"datasetId": tbl.DatasetID,
@@ -300,6 +336,7 @@ func buildTableResponse(tbl *metadata.Table) tableResponse {
 		Type:         tbl.Type,
 		Description:  tbl.Description,
 		Labels:       tbl.Labels,
+		Location:     "US",
 		CreationTime: fmt.Sprintf("%d", tbl.CreationTime.UnixMilli()),
 		LastModified: fmt.Sprintf("%d", tbl.LastModifiedTime.UnixMilli()),
 		NumBytes:     fmt.Sprintf("%d", tbl.NumBytes),

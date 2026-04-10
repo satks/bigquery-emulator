@@ -39,16 +39,19 @@ type patchDatasetRequest struct {
 
 // datasetResponse represents a BigQuery dataset in API response format.
 type datasetResponse struct {
-	Kind             string            `json:"kind"`
-	ID               string            `json:"id"`
-	DatasetReference datasetRef        `json:"datasetReference"`
-	FriendlyName     string            `json:"friendlyName,omitempty"`
-	Description      string            `json:"description,omitempty"`
-	Location         string            `json:"location,omitempty"`
-	Labels           map[string]string `json:"labels,omitempty"`
-	CreationTime     string            `json:"creationTime"`
-	LastModifiedTime string            `json:"lastModifiedTime"`
-	Access           []metadata.AccessEntry `json:"access,omitempty"`
+	Kind                     string            `json:"kind"`
+	Etag                     string            `json:"etag"`
+	ID                       string            `json:"id"`
+	SelfLink                 string            `json:"selfLink"`
+	DatasetReference         datasetRef        `json:"datasetReference"`
+	FriendlyName             string            `json:"friendlyName,omitempty"`
+	Description              string            `json:"description,omitempty"`
+	Location                 string            `json:"location"`
+	Labels                   map[string]string `json:"labels,omitempty"`
+	CreationTime             string            `json:"creationTime"`
+	LastModifiedTime         string            `json:"lastModifiedTime"`
+	DefaultTableExpirationMs string            `json:"defaultTableExpirationMs,omitempty"`
+	Access                   []metadata.AccessEntry `json:"access,omitempty"`
 }
 
 // datasetRef is the datasetReference sub-object in responses.
@@ -67,21 +70,34 @@ type datasetListResponse struct {
 
 // toDatasetResponse converts a metadata.Dataset to a BigQuery API dataset response.
 func toDatasetResponse(d *metadata.Dataset) datasetResponse {
-	return datasetResponse{
-		Kind: "bigquery#dataset",
-		ID:   fmt.Sprintf("%s:%s", d.ProjectID, d.DatasetID),
+	location := d.Location
+	if location == "" {
+		location = "US"
+	}
+
+	resp := datasetResponse{
+		Kind:     "bigquery#dataset",
+		Etag:     generateEtag(d.ProjectID + ":" + d.DatasetID),
+		ID:       fmt.Sprintf("%s:%s", d.ProjectID, d.DatasetID),
+		SelfLink: fmt.Sprintf("http://bigquery.googleapis.com/bigquery/v2/projects/%s/datasets/%s", d.ProjectID, d.DatasetID),
 		DatasetReference: datasetRef{
 			ProjectID: d.ProjectID,
 			DatasetID: d.DatasetID,
 		},
 		FriendlyName:     d.FriendlyName,
 		Description:      d.Description,
-		Location:         d.Location,
+		Location:         location,
 		Labels:           d.Labels,
 		CreationTime:     fmt.Sprintf("%d", d.CreationTime.UnixMilli()),
 		LastModifiedTime: fmt.Sprintf("%d", d.LastModifiedTime.UnixMilli()),
 		Access:           d.Access,
 	}
+
+	if d.DefaultTableExpiration != 0 {
+		resp.DefaultTableExpirationMs = strconv.FormatInt(d.DefaultTableExpiration, 10)
+	}
+
+	return resp
 }
 
 // createDataset handles POST /bigquery/v2/projects/{projectId}/datasets
@@ -181,9 +197,7 @@ func (s *Server) listDatasets(w http.ResponseWriter, r *http.Request) {
 
 	startIndex := 0
 	if pt := r.URL.Query().Get("pageToken"); pt != "" {
-		if parsed, err := strconv.Atoi(pt); err == nil && parsed >= 0 {
-			startIndex = parsed
-		}
+		startIndex = decodePageToken(pt)
 	}
 
 	// Apply pagination
@@ -211,7 +225,7 @@ func (s *Server) listDatasets(w http.ResponseWriter, r *http.Request) {
 
 	// Set next page token if there are more results
 	if endIndex < totalItems {
-		resp.NextPageToken = strconv.Itoa(endIndex)
+		resp.NextPageToken = encodePageToken(endIndex)
 	}
 
 	writeJSON(w, http.StatusOK, resp)

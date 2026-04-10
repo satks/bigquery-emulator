@@ -44,7 +44,10 @@ func (s *Server) listTableData(w http.ResponseWriter, r *http.Request) {
 			maxResults = parsed
 		}
 	}
-	if v := r.URL.Query().Get("startIndex"); v != "" {
+	// Support both pageToken (opaque base64) and startIndex (integer) for backwards compat
+	if pt := r.URL.Query().Get("pageToken"); pt != "" {
+		startIndex = decodePageToken(pt)
+	} else if v := r.URL.Query().Get("startIndex"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			startIndex = parsed
 		}
@@ -82,10 +85,10 @@ func (s *Server) listTableData(w http.ResponseWriter, r *http.Request) {
 	rows := rowsToBQFormat(result.Rows)
 	resp["rows"] = rows
 
-	// Page token
+	// Page token (opaque base64 for tabledata)
 	nextIndex := startIndex + len(result.Rows)
 	if uint64(nextIndex) < totalRows {
-		resp["pageToken"] = fmt.Sprintf("%d", nextIndex)
+		resp["pageToken"] = encodePageToken(nextIndex)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

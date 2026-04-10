@@ -393,8 +393,8 @@ func TestGetQueryResults_Pagination(t *testing.T) {
 		t.Fatal("expected pageToken for first page")
 	}
 
-	// Get second page
-	qResp2, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/queries/" + jobID + "?maxResults=2&startIndex=" + pageToken)
+	// Get second page using the opaque pageToken
+	qResp2, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/queries/" + jobID + "?maxResults=2&pageToken=" + pageToken)
 	if err != nil {
 		t.Fatalf("GET /queries/{id} page 2 error = %v", err)
 	}
@@ -520,5 +520,318 @@ func TestQueriesInsert_WithMaxResults(t *testing.T) {
 	}
 	if result["totalRows"] != "3" {
 		t.Errorf("totalRows = %v, want '3' (total, not page size)", result["totalRows"])
+	}
+}
+
+func TestListJobs_Pagination(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	// Submit 5 jobs
+	for i := 0; i < 5; i++ {
+		body := fmt.Sprintf(`{"configuration": {"query": {"query": "SELECT %d"}}}`, i)
+		resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/jobs", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("POST /jobs error = %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	// Get first page (maxResults=2)
+	resp, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs?maxResults=2")
+	if err != nil {
+		t.Fatalf("GET /jobs error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var listResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&listResp)
+
+	if listResp["kind"] != "bigquery#jobList" {
+		t.Errorf("kind = %v, want bigquery#jobList", listResp["kind"])
+	}
+
+	jobs, ok := listResp["jobs"].([]interface{})
+	if !ok || len(jobs) != 2 {
+		t.Fatalf("first page jobs = %v, want 2", len(jobs))
+	}
+
+	// Should have a nextPageToken
+	nextPageToken, ok := listResp["nextPageToken"].(string)
+	if !ok || nextPageToken == "" {
+		t.Fatal("expected nextPageToken for first page")
+	}
+
+	// Get second page
+	resp2, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs?maxResults=2&pageToken=" + nextPageToken)
+	if err != nil {
+		t.Fatalf("GET /jobs page 2 error = %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var listResp2 map[string]interface{}
+	json.NewDecoder(resp2.Body).Decode(&listResp2)
+
+	jobs2, ok := listResp2["jobs"].([]interface{})
+	if !ok || len(jobs2) != 2 {
+		t.Fatalf("second page jobs = %v, want 2", len(jobs2))
+	}
+
+	// Get third page (last)
+	nextPageToken2, ok := listResp2["nextPageToken"].(string)
+	if !ok || nextPageToken2 == "" {
+		t.Fatal("expected nextPageToken for second page")
+	}
+
+	resp3, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs?maxResults=2&pageToken=" + nextPageToken2)
+	if err != nil {
+		t.Fatalf("GET /jobs page 3 error = %v", err)
+	}
+	defer resp3.Body.Close()
+
+	var listResp3 map[string]interface{}
+	json.NewDecoder(resp3.Body).Decode(&listResp3)
+
+	jobs3, ok := listResp3["jobs"].([]interface{})
+	if !ok || len(jobs3) != 1 {
+		t.Fatalf("third page jobs = %v, want 1", len(jobs3))
+	}
+
+	// Should NOT have a nextPageToken on the last page
+	if _, has := listResp3["nextPageToken"]; has {
+		t.Error("expected no nextPageToken for last page")
+	}
+}
+
+func TestListJobs_StateFilter(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	// Submit 3 jobs and wait for them all to complete
+	jobIDs := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		body := fmt.Sprintf(`{"configuration": {"query": {"query": "SELECT %d"}}}`, i)
+		resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/jobs", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("POST /jobs error = %v", err)
+		}
+		var jobResp map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&jobResp)
+		resp.Body.Close()
+		jobRef := jobResp["jobReference"].(map[string]interface{})
+		jobIDs[i] = jobRef["jobId"].(string)
+	}
+
+	// Wait for all jobs to complete
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, jid := range jobIDs {
+			getResp, _ := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs/" + jid)
+			var getBody map[string]interface{}
+			json.NewDecoder(getResp.Body).Decode(&getBody)
+			getResp.Body.Close()
+			status := getBody["status"].(map[string]interface{})
+			if status["state"] != "DONE" {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Filter for DONE jobs
+	resp, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs?stateFilter=DONE")
+	if err != nil {
+		t.Fatalf("GET /jobs?stateFilter=DONE error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var listResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&listResp)
+
+	jobs, ok := listResp["jobs"].([]interface{})
+	if !ok {
+		t.Fatal("jobs field missing or wrong type")
+	}
+	if len(jobs) < 3 {
+		t.Errorf("expected at least 3 DONE jobs, got %d", len(jobs))
+	}
+
+	// All returned jobs should be in DONE state
+	for _, j := range jobs {
+		jMap := j.(map[string]interface{})
+		status := jMap["status"].(map[string]interface{})
+		if status["state"] != "DONE" {
+			t.Errorf("expected state=DONE, got %v", status["state"])
+		}
+	}
+
+	// Filter for RUNNING — should return 0 since all are done
+	resp2, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/jobs?stateFilter=RUNNING")
+	if err != nil {
+		t.Fatalf("GET /jobs?stateFilter=RUNNING error = %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var listResp2 map[string]interface{}
+	json.NewDecoder(resp2.Body).Decode(&listResp2)
+
+	jobs2, ok := listResp2["jobs"].([]interface{})
+	if ok && len(jobs2) != 0 {
+		t.Errorf("expected 0 RUNNING jobs, got %d", len(jobs2))
+	}
+}
+
+func TestInsertJob_Load(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	body := `{
+		"configuration": {
+			"load": {
+				"destinationTable": {
+					"projectId": "test-project",
+					"datasetId": "test_dataset",
+					"tableId": "loaded_table"
+				},
+				"schema": {
+					"fields": [
+						{"name": "id", "type": "INT64", "mode": "REQUIRED"},
+						{"name": "value", "type": "STRING", "mode": "NULLABLE"}
+					]
+				},
+				"sourceUris": ["gs://bucket/data.csv"],
+				"sourceFormat": "CSV"
+			}
+		}
+	}`
+
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/jobs", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /jobs error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /jobs status = %d, want 200", resp.StatusCode)
+	}
+
+	var jobResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&jobResp)
+
+	if jobResp["kind"] != "bigquery#job" {
+		t.Errorf("kind = %v, want bigquery#job", jobResp["kind"])
+	}
+
+	// Job should be DONE immediately (emulator stub)
+	status := jobResp["status"].(map[string]interface{})
+	if status["state"] != "DONE" {
+		t.Errorf("state = %v, want DONE", status["state"])
+	}
+
+	// Configuration should include load section with jobType LOAD
+	config := jobResp["configuration"].(map[string]interface{})
+	if config["jobType"] != "LOAD" {
+		t.Errorf("jobType = %v, want LOAD", config["jobType"])
+	}
+
+	loadCfg, ok := config["load"].(map[string]interface{})
+	if !ok {
+		t.Fatal("configuration.load missing from response")
+	}
+
+	destTable, ok := loadCfg["destinationTable"].(map[string]interface{})
+	if !ok {
+		t.Fatal("destinationTable missing from load config")
+	}
+	if destTable["tableId"] != "loaded_table" {
+		t.Errorf("destinationTable.tableId = %v, want loaded_table", destTable["tableId"])
+	}
+
+	// Verify the table was created in metadata
+	getResp, err := http.Get(baseURL + "/bigquery/v2/projects/test-project/datasets/test_dataset/tables/loaded_table")
+	if err != nil {
+		t.Fatalf("GET table error = %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected table to exist, got status %d", getResp.StatusCode)
+	}
+
+	var tableResp map[string]interface{}
+	json.NewDecoder(getResp.Body).Decode(&tableResp)
+
+	if tableResp["kind"] != "bigquery#table" {
+		t.Errorf("table kind = %v, want bigquery#table", tableResp["kind"])
+	}
+}
+
+func TestInsertJob_Extract(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	body := `{
+		"configuration": {
+			"extract": {
+				"sourceTable": {
+					"projectId": "test-project",
+					"datasetId": "test_dataset",
+					"tableId": "users"
+				},
+				"destinationUris": ["gs://bucket/export.csv"],
+				"destinationFormat": "CSV"
+			}
+		}
+	}`
+
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/jobs", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /jobs error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /jobs status = %d, want 200", resp.StatusCode)
+	}
+
+	var jobResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&jobResp)
+
+	if jobResp["kind"] != "bigquery#job" {
+		t.Errorf("kind = %v, want bigquery#job", jobResp["kind"])
+	}
+
+	// Job should be DONE immediately (emulator stub)
+	status := jobResp["status"].(map[string]interface{})
+	if status["state"] != "DONE" {
+		t.Errorf("state = %v, want DONE", status["state"])
+	}
+
+	// Configuration should include extract section with jobType EXTRACT
+	config := jobResp["configuration"].(map[string]interface{})
+	if config["jobType"] != "EXTRACT" {
+		t.Errorf("jobType = %v, want EXTRACT", config["jobType"])
+	}
+
+	extractCfg, ok := config["extract"].(map[string]interface{})
+	if !ok {
+		t.Fatal("configuration.extract missing from response")
+	}
+
+	sourceTable, ok := extractCfg["sourceTable"].(map[string]interface{})
+	if !ok {
+		t.Fatal("sourceTable missing from extract config")
+	}
+	if sourceTable["tableId"] != "users" {
+		t.Errorf("sourceTable.tableId = %v, want users", sourceTable["tableId"])
+	}
+
+	destURIs, ok := extractCfg["destinationUris"].([]interface{})
+	if !ok || len(destURIs) != 1 {
+		t.Fatalf("destinationUris = %v, want 1 URI", destURIs)
+	}
+	if destURIs[0] != "gs://bucket/export.csv" {
+		t.Errorf("destinationUris[0] = %v, want gs://bucket/export.csv", destURIs[0])
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sathish/bigquery-emulator/pkg/metadata"
@@ -23,6 +24,28 @@ type jobInsertRequest struct {
 			Query        string `json:"query"`
 			UseLegacySQL *bool  `json:"useLegacySql,omitempty"`
 		} `json:"query,omitempty"`
+		Load *struct {
+			DestinationTable struct {
+				ProjectID string `json:"projectId"`
+				DatasetID string `json:"datasetId"`
+				TableID   string `json:"tableId"`
+			} `json:"destinationTable"`
+			Schema *struct {
+				Fields []metadata.FieldSchema `json:"fields"`
+			} `json:"schema,omitempty"`
+			SourceURIs       []string `json:"sourceUris,omitempty"`
+			SourceFormat     string   `json:"sourceFormat,omitempty"`
+			WriteDisposition string   `json:"writeDisposition,omitempty"`
+		} `json:"load,omitempty"`
+		Extract *struct {
+			SourceTable struct {
+				ProjectID string `json:"projectId"`
+				DatasetID string `json:"datasetId"`
+				TableID   string `json:"tableId"`
+			} `json:"sourceTable"`
+			DestinationURIs   []string `json:"destinationUris,omitempty"`
+			DestinationFormat string   `json:"destinationFormat,omitempty"`
+		} `json:"extract,omitempty"`
 	} `json:"configuration"`
 }
 
@@ -30,11 +53,14 @@ type jobInsertRequest struct {
 func jobToJSON(j *metadata.Job) map[string]interface{} {
 	result := map[string]interface{}{
 		"kind": "bigquery#job",
+		"etag": generateEtag(j.ProjectID + ":" + j.JobID),
 		"id":   fmt.Sprintf("%s:%s", j.ProjectID, j.JobID),
 		"jobReference": map[string]interface{}{
 			"projectId": j.ProjectID,
 			"jobId":     j.JobID,
+			"location":  "US",
 		},
+		"user_email": "emulator@localhost",
 		"status": map[string]interface{}{
 			"state": j.Status.State,
 		},
@@ -58,6 +84,54 @@ func jobToJSON(j *metadata.Job) map[string]interface{} {
 			"query":        j.Config.Query.Query,
 			"useLegacySql": j.Config.Query.UseLegacySQL,
 		}
+	}
+
+	// Add load configuration if present
+	if j.Config.Load != nil {
+		config := result["configuration"].(map[string]interface{})
+		config["jobType"] = "LOAD"
+		loadCfg := map[string]interface{}{
+			"destinationTable": map[string]interface{}{
+				"projectId": j.Config.Load.DestinationTable.ProjectID,
+				"datasetId": j.Config.Load.DestinationTable.DatasetID,
+				"tableId":   j.Config.Load.DestinationTable.TableID,
+			},
+		}
+		if j.Config.Load.SourceFormat != "" {
+			loadCfg["sourceFormat"] = j.Config.Load.SourceFormat
+		}
+		if len(j.Config.Load.SourceURIs) > 0 {
+			loadCfg["sourceUris"] = j.Config.Load.SourceURIs
+		}
+		if j.Config.Load.WriteDisposition != "" {
+			loadCfg["writeDisposition"] = j.Config.Load.WriteDisposition
+		}
+		if j.Config.Load.Schema != nil {
+			loadCfg["schema"] = map[string]interface{}{
+				"fields": j.Config.Load.Schema.Fields,
+			}
+		}
+		config["load"] = loadCfg
+	}
+
+	// Add extract configuration if present
+	if j.Config.Extract != nil {
+		config := result["configuration"].(map[string]interface{})
+		config["jobType"] = "EXTRACT"
+		extractCfg := map[string]interface{}{
+			"sourceTable": map[string]interface{}{
+				"projectId": j.Config.Extract.SourceTable.ProjectID,
+				"datasetId": j.Config.Extract.SourceTable.DatasetID,
+				"tableId":   j.Config.Extract.SourceTable.TableID,
+			},
+		}
+		if len(j.Config.Extract.DestinationURIs) > 0 {
+			extractCfg["destinationUris"] = j.Config.Extract.DestinationURIs
+		}
+		if j.Config.Extract.DestinationFormat != "" {
+			extractCfg["destinationFormat"] = j.Config.Extract.DestinationFormat
+		}
+		config["extract"] = extractCfg
 	}
 
 	// Add statistics
@@ -85,33 +159,117 @@ func (s *Server) insertJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Configuration.Query == nil {
-		apierror.NewBadRequestError("Only query jobs are supported; configuration.query is required").WriteResponse(w)
+	// Handle QUERY jobs
+	if req.Configuration.Query != nil {
+		useLegacySQL := false
+		if req.Configuration.Query.UseLegacySQL != nil {
+			useLegacySQL = *req.Configuration.Query.UseLegacySQL
+		}
+
+		config := metadata.JobConfig{
+			JobType: "QUERY",
+			Query: &metadata.QueryConfig{
+				Query:        req.Configuration.Query.Query,
+				UseLegacySQL: useLegacySQL,
+			},
+		}
+
+		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		if err != nil {
+			apierror.NewInternalError("Failed to submit job: " + err.Error()).WriteResponse(w)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(jobToJSON(job))
 		return
 	}
 
-	useLegacySQL := false
-	if req.Configuration.Query.UseLegacySQL != nil {
-		useLegacySQL = *req.Configuration.Query.UseLegacySQL
-	}
+	// Handle LOAD jobs
+	if req.Configuration.Load != nil {
+		loadCfg := req.Configuration.Load
+		destTable := &metadata.TableReference{
+			ProjectID: loadCfg.DestinationTable.ProjectID,
+			DatasetID: loadCfg.DestinationTable.DatasetID,
+			TableID:   loadCfg.DestinationTable.TableID,
+		}
+		if destTable.ProjectID == "" {
+			destTable.ProjectID = projectID
+		}
 
-	config := metadata.JobConfig{
-		JobType: "QUERY",
-		Query: &metadata.QueryConfig{
-			Query:        req.Configuration.Query.Query,
-			UseLegacySQL: useLegacySQL,
-		},
-	}
+		// Create the destination table with schema if it doesn't exist
+		if loadCfg.Schema != nil && len(loadCfg.Schema.Fields) > 0 {
+			tbl := metadata.Table{
+				ProjectID:    destTable.ProjectID,
+				DatasetID:    destTable.DatasetID,
+				TableID:      destTable.TableID,
+				Type:         "TABLE",
+				Schema:       &metadata.TableSchema{Fields: loadCfg.Schema.Fields},
+				CreationTime: time.Now(),
+				LastModifiedTime: time.Now(),
+			}
+			// Ignore already-exists errors — the table may already be there
+			_ = s.repo.CreateTable(r.Context(), tbl)
+		}
 
-	job, err := s.jobMgr.Submit(r.Context(), projectID, config)
-	if err != nil {
-		apierror.NewInternalError("Failed to submit job: " + err.Error()).WriteResponse(w)
+		metaLoadCfg := &metadata.LoadConfig{
+			DestinationTable: destTable,
+			SourceURIs:       loadCfg.SourceURIs,
+			SourceFormat:     loadCfg.SourceFormat,
+			WriteDisposition: loadCfg.WriteDisposition,
+		}
+		if loadCfg.Schema != nil {
+			metaLoadCfg.Schema = &metadata.TableSchema{Fields: loadCfg.Schema.Fields}
+		}
+
+		config := metadata.JobConfig{
+			JobType: "LOAD",
+			Load:    metaLoadCfg,
+		}
+
+		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		if err != nil {
+			apierror.NewInternalError("Failed to submit load job: " + err.Error()).WriteResponse(w)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(jobToJSON(job))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(jobToJSON(job))
+	// Handle EXTRACT jobs
+	if req.Configuration.Extract != nil {
+		extractCfg := req.Configuration.Extract
+
+		config := metadata.JobConfig{
+			JobType: "EXTRACT",
+			Extract: &metadata.ExtractConfig{
+				SourceTable: &metadata.TableReference{
+					ProjectID: extractCfg.SourceTable.ProjectID,
+					DatasetID: extractCfg.SourceTable.DatasetID,
+					TableID:   extractCfg.SourceTable.TableID,
+				},
+				DestinationURIs:   extractCfg.DestinationURIs,
+				DestinationFormat: extractCfg.DestinationFormat,
+			},
+		}
+
+		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		if err != nil {
+			apierror.NewInternalError("Failed to submit extract job: " + err.Error()).WriteResponse(w)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(jobToJSON(job))
+		return
+	}
+
+	apierror.NewBadRequestError("Job configuration must include query, load, or extract").WriteResponse(w)
 }
 
 // getJob handles GET /bigquery/v2/projects/{projectId}/jobs/{jobId}
@@ -139,14 +297,54 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobList := make([]map[string]interface{}, 0, len(jobs))
-	for _, j := range jobs {
+	// Apply stateFilter if provided
+	if sf := r.URL.Query().Get("stateFilter"); sf != "" {
+		filtered := make([]*metadata.Job, 0, len(jobs))
+		for _, j := range jobs {
+			if j.Status.State == sf {
+				filtered = append(filtered, j)
+			}
+		}
+		jobs = filtered
+	}
+
+	// Parse pagination parameters
+	maxResults := 1000
+	if mr := r.URL.Query().Get("maxResults"); mr != "" {
+		if parsed, err := strconv.Atoi(mr); err == nil && parsed > 0 {
+			maxResults = parsed
+		}
+	}
+
+	startIndex := 0
+	if pt := r.URL.Query().Get("pageToken"); pt != "" {
+		startIndex = decodePageToken(pt)
+	}
+
+	// Apply pagination
+	totalItems := len(jobs)
+	if startIndex > totalItems {
+		startIndex = totalItems
+	}
+	endIndex := startIndex + maxResults
+	if endIndex > totalItems {
+		endIndex = totalItems
+	}
+	pageJobs := jobs[startIndex:endIndex]
+
+	jobList := make([]map[string]interface{}, 0, len(pageJobs))
+	for _, j := range pageJobs {
 		jobList = append(jobList, jobToJSON(j))
 	}
 
 	resp := map[string]interface{}{
 		"kind": "bigquery#jobList",
 		"jobs": jobList,
+	}
+
+	// Set next page token if there are more results
+	if endIndex < totalItems {
+		resp["nextPageToken"] = encodePageToken(endIndex)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -182,7 +380,10 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 	startIndex := 0
 	maxResults := 1000 // default page size
 
-	if v := r.URL.Query().Get("startIndex"); v != "" {
+	// Support both pageToken (opaque base64) and startIndex (integer) for backwards compat
+	if pt := r.URL.Query().Get("pageToken"); pt != "" {
+		startIndex = decodePageToken(pt)
+	} else if v := r.URL.Query().Get("startIndex"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			startIndex = parsed
 		}
@@ -201,11 +402,14 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{
 		"kind": "bigquery#getQueryResultsResponse",
+		"etag": generateEtag(projectID + ":" + jobID),
 		"jobReference": map[string]interface{}{
 			"projectId": projectID,
 			"jobId":     jobID,
+			"location":  "US",
 		},
 		"jobComplete": result.JobComplete,
+		"cacheHit":    false,
 	}
 
 	if result.JobComplete {
@@ -233,7 +437,7 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 		// Page token: if there are more rows beyond this page
 		nextIndex := startIndex + len(result.Rows)
 		if uint64(nextIndex) < result.TotalRows {
-			resp["pageToken"] = fmt.Sprintf("%d", nextIndex)
+			resp["pageToken"] = encodePageToken(nextIndex)
 		}
 	}
 
@@ -293,8 +497,10 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 			"jobReference": map[string]interface{}{
 				"projectId": projectID,
 				"jobId":     job.JobID,
+				"location":  "US",
 			},
 			"jobComplete": false,
+			"cacheHit":    false,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
@@ -314,6 +520,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		"kind":        "bigquery#queryResponse",
 		"jobComplete": true,
 		"totalRows":   fmt.Sprintf("%d", result.TotalRows),
+		"cacheHit":    false,
 	}
 
 	// We still need a jobReference — create a completed job record
@@ -326,7 +533,9 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		resp["jobReference"] = map[string]interface{}{
 			"projectId": projectID,
 			"jobId":     job.JobID,
+			"location":  "US",
 		}
+		resp["etag"] = generateEtag(projectID + ":" + job.JobID)
 	}
 
 	// Schema
@@ -349,7 +558,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 
 	// Page token if truncated
 	if len(result.Rows) > maxResults {
-		resp["pageToken"] = fmt.Sprintf("%d", maxResults)
+		resp["pageToken"] = encodePageToken(maxResults)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

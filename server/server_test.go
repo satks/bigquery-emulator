@@ -136,6 +136,8 @@ func TestServer_RoutesExist(t *testing.T) {
 		method string
 		path   string
 	}{
+		{"GET", "/bigquery/v2/projects"},
+		{"GET", "/bigquery/v2/projects/test-project"},
 		{"GET", "/bigquery/v2/projects/test-project/datasets"},
 		{"POST", "/bigquery/v2/projects/test-project/datasets"},
 		{"GET", "/bigquery/v2/projects/test-project/datasets/ds1"},

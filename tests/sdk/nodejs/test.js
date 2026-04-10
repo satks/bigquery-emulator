@@ -161,6 +161,113 @@ async function testErrorHandling() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// New tests for SDK compatibility: projects, etag, pagination
+// ---------------------------------------------------------------------------
+
+async function testProjectList() {
+  const name = "Project list endpoint";
+  try {
+    // Use raw HTTP request since the Node.js SDK doesn't expose project list directly
+    const http = require("http");
+    const url = `http://${API_ENDPOINT}/bigquery/v2/projects`;
+
+    const body = await new Promise((resolve, reject) => {
+      http.get(url, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => resolve(JSON.parse(data)));
+        res.on("error", reject);
+      }).on("error", reject);
+    });
+
+    if (body.kind !== "bigquery#projectList") {
+      throw new Error(`Expected kind 'bigquery#projectList', got '${body.kind}'`);
+    }
+    if (!Array.isArray(body.projects) || body.projects.length === 0) {
+      throw new Error("Expected non-empty projects array");
+    }
+    const proj = body.projects[0];
+    if (!proj.projectReference || !proj.projectReference.projectId) {
+      throw new Error("Missing projectReference.projectId in project entry");
+    }
+    pass(name);
+  } catch (err) {
+    fail(name, err);
+  }
+}
+
+async function testDatasetEtag() {
+  const name = "Dataset response has etag";
+  try {
+    const dataset = bigquery.dataset(DATASET_ID);
+    const [metadata] = await dataset.getMetadata();
+
+    // The SDK exposes etag from the response
+    if (!metadata.etag || typeof metadata.etag !== "string" || metadata.etag === "") {
+      throw new Error(`Expected non-empty etag string, got '${metadata.etag}'`);
+    }
+    pass(name);
+  } catch (err) {
+    fail(name, err);
+  }
+}
+
+async function testTableEtag() {
+  const name = "Table response has etag";
+  try {
+    const table = bigquery.dataset(DATASET_ID).table(TABLE_ID);
+    const [metadata] = await table.getMetadata();
+
+    if (!metadata.etag || typeof metadata.etag !== "string" || metadata.etag === "") {
+      throw new Error(`Expected non-empty etag string, got '${metadata.etag}'`);
+    }
+    pass(name);
+  } catch (err) {
+    fail(name, err);
+  }
+}
+
+async function testTablePagination() {
+  const name = "Table list pagination with pageToken";
+  try {
+    // Create additional tables for pagination testing
+    const dataset = bigquery.dataset(DATASET_ID);
+    const schema = [
+      { name: "id", type: "INT64", mode: "REQUIRED" },
+    ];
+
+    // Create extra tables (we already have TABLE_ID from earlier)
+    await dataset.createTable("pag_table_b", { schema });
+    await dataset.createTable("pag_table_c", { schema });
+
+    // List tables with maxResults=1 to force pagination
+    const [tables, nextQuery] = await dataset.getTables({ maxResults: 1 });
+
+    if (!Array.isArray(tables) || tables.length === 0) {
+      throw new Error("Expected at least 1 table in first page");
+    }
+    if (tables.length > 1) {
+      throw new Error(`Expected maxResults=1 to return 1 table, got ${tables.length}`);
+    }
+
+    // nextQuery should contain a pageToken for fetching the next page
+    if (!nextQuery || !nextQuery.pageToken) {
+      throw new Error("Expected nextQuery with pageToken for pagination");
+    }
+
+    // Fetch next page using the pageToken
+    const [tables2] = await dataset.getTables(nextQuery);
+    if (!Array.isArray(tables2) || tables2.length === 0) {
+      throw new Error("Expected tables in second page");
+    }
+
+    pass(name);
+  } catch (err) {
+    fail(name, err);
+  }
+}
+
 async function main() {
   console.log(`BigQuery Emulator Node.js SDK Test`);
   console.log(`Endpoint: ${API_ENDPOINT}`);
@@ -174,6 +281,12 @@ async function main() {
   await testListDatasets();
   await testListTables();
   await testErrorHandling();
+
+  // New compatibility tests
+  await testProjectList();
+  await testDatasetEtag();
+  await testTableEtag();
+  await testTablePagination();
 
   console.log("---");
   console.log(`Results: ${passed} passed, ${failed} failed`);

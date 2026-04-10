@@ -743,3 +743,528 @@ func TestGoSDK_JobComplete_ResponseFormat(t *testing.T) {
 		t.Errorf("row[0].f[1].v = %v, want 'first'", cell1["v"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_ProjectList verifies GET /bigquery/v2/projects.
+// The Go SDK uses this when listing projects. Expects kind="bigquery#projectList"
+// and a projects array where each entry has projectReference.projectId.
+// ---------------------------------------------------------------------------
+func TestGoSDK_ProjectList(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	resp := mustGet(t, fmt.Sprintf("%s/bigquery/v2/projects", base))
+	result := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, result)
+	}
+
+	if result["kind"] != "bigquery#projectList" {
+		t.Errorf("kind = %v, want bigquery#projectList", result["kind"])
+	}
+
+	projects, ok := result["projects"].([]interface{})
+	if !ok {
+		t.Fatal("projects field missing or wrong type")
+	}
+	if len(projects) == 0 {
+		t.Fatal("expected at least 1 project")
+	}
+
+	// Each project should have projectReference with projectId
+	for i, p := range projects {
+		proj, ok := p.(map[string]interface{})
+		if !ok {
+			t.Errorf("projects[%d] is not an object", i)
+			continue
+		}
+		ref, ok := proj["projectReference"].(map[string]interface{})
+		if !ok {
+			t.Errorf("projects[%d].projectReference missing", i)
+			continue
+		}
+		if ref["projectId"] == nil || ref["projectId"] == "" {
+			t.Errorf("projects[%d].projectReference.projectId missing or empty", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_GetProject verifies GET /bigquery/v2/projects/{projectId}.
+// Expects kind="bigquery#project", id, and projectReference.projectId.
+// ---------------------------------------------------------------------------
+func TestGoSDK_GetProject(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	resp := mustGet(t, fmt.Sprintf("%s/bigquery/v2/projects/%s", base, testProject))
+	result := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, result)
+	}
+
+	if result["kind"] != "bigquery#project" {
+		t.Errorf("kind = %v, want bigquery#project", result["kind"])
+	}
+
+	if result["id"] == nil || result["id"] == "" {
+		t.Error("id field missing or empty")
+	}
+
+	ref, ok := result["projectReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("projectReference missing")
+	}
+	if ref["projectId"] != testProject {
+		t.Errorf("projectReference.projectId = %v, want %s", ref["projectId"], testProject)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_DatasetResponse_HasEtag verifies that dataset GET responses
+// include an "etag" field. The Go SDK reads this for optimistic concurrency.
+// ---------------------------------------------------------------------------
+func TestGoSDK_DatasetResponse_HasEtag(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Create a dataset
+	body := `{"datasetReference":{"projectId":"test-project","datasetId":"etag_ds"}}`
+	resp := mustPost(t, apiURL(base, "/datasets"), body)
+	resp.Body.Close()
+
+	// GET the dataset and check for etag
+	resp = mustGet(t, apiURL(base, "/datasets/etag_ds"))
+	result := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, result)
+	}
+
+	etag, ok := result["etag"].(string)
+	if !ok || etag == "" {
+		t.Errorf("etag = %v (type %T), want non-empty string", result["etag"], result["etag"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_TableResponse_HasEtag verifies that table GET responses include
+// an "etag" field.
+// ---------------------------------------------------------------------------
+func TestGoSDK_TableResponse_HasEtag(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Create dataset + table
+	dsBody := `{"datasetReference":{"projectId":"test-project","datasetId":"etag_tbl_ds"}}`
+	resp := mustPost(t, apiURL(base, "/datasets"), dsBody)
+	resp.Body.Close()
+
+	tblBody := `{
+		"tableReference":{"projectId":"test-project","datasetId":"etag_tbl_ds","tableId":"t1"},
+		"schema":{"fields":[{"name":"id","type":"INT64"}]}
+	}`
+	resp = mustPost(t, apiURL(base, "/datasets/etag_tbl_ds/tables"), tblBody)
+	resp.Body.Close()
+
+	// GET the table and check for etag
+	resp = mustGet(t, apiURL(base, "/datasets/etag_tbl_ds/tables/t1"))
+	result := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, result)
+	}
+
+	etag, ok := result["etag"].(string)
+	if !ok || etag == "" {
+		t.Errorf("etag = %v (type %T), want non-empty string", result["etag"], result["etag"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_JobResponse_HasLocation verifies that job GET responses include
+// jobReference.location (e.g. "US"). The Go SDK uses this for region routing.
+// ---------------------------------------------------------------------------
+func TestGoSDK_JobResponse_HasLocation(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Submit a query job
+	jobBody := `{
+		"configuration": {
+			"query": {
+				"query": "SELECT 1 AS x",
+				"useLegacySql": false
+			}
+		}
+	}`
+	resp := mustPost(t, apiURL(base, "/jobs"), jobBody)
+	jobResult := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /jobs status = %d, want 200; body = %v", resp.StatusCode, jobResult)
+	}
+
+	jobRef, ok := jobResult["jobReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("jobReference missing from POST /jobs response")
+	}
+	jobID, _ := jobRef["jobId"].(string)
+
+	// Wait for job to complete
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		getResp := mustGet(t, apiURL(base, "/jobs/"+jobID))
+		getBody := decodeJSON(t, getResp)
+		status, _ := getBody["status"].(map[string]interface{})
+		if status["state"] == "DONE" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// GET the job and check for location in jobReference
+	getResp := mustGet(t, apiURL(base, "/jobs/"+jobID))
+	getBody := decodeJSON(t, getResp)
+
+	jobRefGet, ok := getBody["jobReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("jobReference missing from GET /jobs response")
+	}
+
+	location, ok := jobRefGet["location"].(string)
+	if !ok || location == "" {
+		t.Errorf("jobReference.location = %v (type %T), want non-empty string (e.g. 'US')", jobRefGet["location"], jobRefGet["location"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_QueryResults_HasCacheHit verifies that getQueryResults includes
+// a "cacheHit" field. The Go SDK exposes this via QueryStatistics.
+// ---------------------------------------------------------------------------
+func TestGoSDK_QueryResults_HasCacheHit(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Submit a query job
+	jobBody := `{
+		"configuration": {
+			"query": {
+				"query": "SELECT 42 AS answer",
+				"useLegacySql": false
+			}
+		}
+	}`
+	resp := mustPost(t, apiURL(base, "/jobs"), jobBody)
+	jobResult := decodeJSON(t, resp)
+
+	jobRef := jobResult["jobReference"].(map[string]interface{})
+	jobID := jobRef["jobId"].(string)
+
+	// Wait for job to complete
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		getResp := mustGet(t, apiURL(base, "/jobs/"+jobID))
+		getBody := decodeJSON(t, getResp)
+		status, _ := getBody["status"].(map[string]interface{})
+		if status["state"] == "DONE" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Get query results and check for cacheHit
+	qResp := mustGet(t, apiURL(base, "/queries/"+jobID))
+	qResult := decodeJSON(t, qResp)
+
+	if qResult["kind"] != "bigquery#getQueryResultsResponse" {
+		t.Errorf("kind = %v, want bigquery#getQueryResultsResponse", qResult["kind"])
+	}
+
+	// cacheHit should be present as a boolean (typically false for first run)
+	cacheHit, ok := qResult["cacheHit"]
+	if !ok || cacheHit == nil {
+		t.Errorf("cacheHit field missing from getQueryResults response")
+	} else {
+		if _, isBool := cacheHit.(bool); !isBool {
+			t.Errorf("cacheHit type = %T, want bool", cacheHit)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_ListTables_Pagination verifies that listing tables with
+// maxResults returns a nextPageToken that can be used to fetch the next page.
+// ---------------------------------------------------------------------------
+func TestGoSDK_ListTables_Pagination(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Create dataset with 3 tables
+	dsBody := `{"datasetReference":{"projectId":"test-project","datasetId":"pag_tbl_ds"}}`
+	resp := mustPost(t, apiURL(base, "/datasets"), dsBody)
+	resp.Body.Close()
+
+	for _, tbl := range []string{"table_a", "table_b", "table_c"} {
+		body := fmt.Sprintf(`{
+			"tableReference":{"projectId":"test-project","datasetId":"pag_tbl_ds","tableId":"%s"},
+			"schema":{"fields":[{"name":"id","type":"INT64"}]}
+		}`, tbl)
+		resp := mustPost(t, apiURL(base, "/datasets/pag_tbl_ds/tables"), body)
+		resp.Body.Close()
+	}
+
+	// List with maxResults=2 -> should get 2 tables + nextPageToken
+	resp = mustGet(t, apiURL(base, "/datasets/pag_tbl_ds/tables?maxResults=2"))
+	page1 := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, page1)
+	}
+
+	tables1, ok := page1["tables"].([]interface{})
+	if !ok {
+		t.Fatal("tables field missing from page 1")
+	}
+	if len(tables1) != 2 {
+		t.Errorf("page 1 table count = %d, want 2", len(tables1))
+	}
+
+	nextPageToken, ok := page1["nextPageToken"].(string)
+	if !ok || nextPageToken == "" {
+		t.Fatal("nextPageToken missing or empty on page 1")
+	}
+
+	// Use pageToken to get page 2
+	resp = mustGet(t, apiURL(base, fmt.Sprintf("/datasets/pag_tbl_ds/tables?maxResults=2&pageToken=%s", nextPageToken)))
+	page2 := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("page 2 status = %d, want 200; body = %v", resp.StatusCode, page2)
+	}
+
+	tables2, ok := page2["tables"].([]interface{})
+	if !ok {
+		t.Fatal("tables field missing from page 2")
+	}
+	if len(tables2) != 1 {
+		t.Errorf("page 2 table count = %d, want 1", len(tables2))
+	}
+
+	// Page 2 should NOT have a nextPageToken (no more data)
+	if page2["nextPageToken"] != nil {
+		tok, isStr := page2["nextPageToken"].(string)
+		if isStr && tok != "" {
+			t.Errorf("page 2 should not have nextPageToken, got %q", tok)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_ListJobs_Pagination verifies that listing jobs with maxResults
+// returns a nextPageToken when there are more results.
+// ---------------------------------------------------------------------------
+func TestGoSDK_ListJobs_Pagination(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Submit 3 query jobs
+	for i := 0; i < 3; i++ {
+		jobBody := fmt.Sprintf(`{
+			"configuration": {
+				"query": {
+					"query": "SELECT %d AS val",
+					"useLegacySql": false
+				}
+			}
+		}`, i+1)
+		resp := mustPost(t, apiURL(base, "/jobs"), jobBody)
+		resp.Body.Close()
+	}
+
+	// Wait a moment for jobs to be registered
+	time.Sleep(200 * time.Millisecond)
+
+	// List with maxResults=2
+	resp := mustGet(t, apiURL(base, "/jobs?maxResults=2"))
+	page1 := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %v", resp.StatusCode, page1)
+	}
+
+	jobs1, ok := page1["jobs"].([]interface{})
+	if !ok {
+		t.Fatal("jobs field missing from page 1")
+	}
+	if len(jobs1) != 2 {
+		t.Errorf("page 1 job count = %d, want 2", len(jobs1))
+	}
+
+	nextPageToken, ok := page1["nextPageToken"].(string)
+	if !ok || nextPageToken == "" {
+		t.Fatal("nextPageToken missing or empty on page 1")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_LoadJob verifies that a LOAD job can be submitted and completes
+// with status DONE. The Go SDK uses this for client.Dataset().Table().LoaderFrom().
+// ---------------------------------------------------------------------------
+func TestGoSDK_LoadJob(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Create dataset + table first
+	dsBody := `{"datasetReference":{"projectId":"test-project","datasetId":"load_ds"}}`
+	resp := mustPost(t, apiURL(base, "/datasets"), dsBody)
+	resp.Body.Close()
+
+	tblBody := `{
+		"tableReference":{"projectId":"test-project","datasetId":"load_ds","tableId":"load_tbl"},
+		"schema":{"fields":[
+			{"name":"id","type":"INT64"},
+			{"name":"name","type":"STRING"}
+		]}
+	}`
+	resp = mustPost(t, apiURL(base, "/datasets/load_ds/tables"), tblBody)
+	resp.Body.Close()
+
+	// Submit a LOAD job
+	jobBody := `{
+		"configuration": {
+			"load": {
+				"destinationTable": {
+					"projectId": "test-project",
+					"datasetId": "load_ds",
+					"tableId": "load_tbl"
+				},
+				"sourceFormat": "NEWLINE_DELIMITED_JSON",
+				"sourceUris": ["gs://fake-bucket/data.json"]
+			}
+		}
+	}`
+
+	resp = mustPost(t, apiURL(base, "/jobs"), jobBody)
+	jobResult := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /jobs status = %d, want 200; body = %v", resp.StatusCode, jobResult)
+	}
+
+	if jobResult["kind"] != "bigquery#job" {
+		t.Errorf("kind = %v, want bigquery#job", jobResult["kind"])
+	}
+
+	jobRef, ok := jobResult["jobReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("jobReference missing")
+	}
+	jobID, _ := jobRef["jobId"].(string)
+
+	// Wait for job to complete
+	deadline := time.Now().Add(5 * time.Second)
+	var finalStatus map[string]interface{}
+	for time.Now().Before(deadline) {
+		getResp := mustGet(t, apiURL(base, "/jobs/"+jobID))
+		getBody := decodeJSON(t, getResp)
+		status, _ := getBody["status"].(map[string]interface{})
+		if status["state"] == "DONE" {
+			finalStatus = getBody
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if finalStatus == nil {
+		t.Fatal("load job did not complete within deadline")
+	}
+
+	// Verify it's a LOAD job
+	config, ok := finalStatus["configuration"].(map[string]interface{})
+	if ok {
+		if config["jobType"] != nil && config["jobType"] != "LOAD" {
+			t.Errorf("configuration.jobType = %v, want LOAD", config["jobType"])
+		}
+		if config["load"] == nil {
+			t.Error("configuration.load missing from completed load job")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGoSDK_ExtractJob verifies that an EXTRACT job can be submitted and
+// completes with status DONE.
+// ---------------------------------------------------------------------------
+func TestGoSDK_ExtractJob(t *testing.T) {
+	base := setupSDKTestServer(t)
+
+	// Create dataset + table first
+	dsBody := `{"datasetReference":{"projectId":"test-project","datasetId":"ext_ds"}}`
+	resp := mustPost(t, apiURL(base, "/datasets"), dsBody)
+	resp.Body.Close()
+
+	tblBody := `{
+		"tableReference":{"projectId":"test-project","datasetId":"ext_ds","tableId":"ext_tbl"},
+		"schema":{"fields":[
+			{"name":"id","type":"INT64"},
+			{"name":"val","type":"STRING"}
+		]}
+	}`
+	resp = mustPost(t, apiURL(base, "/datasets/ext_ds/tables"), tblBody)
+	resp.Body.Close()
+
+	// Submit an EXTRACT job
+	jobBody := `{
+		"configuration": {
+			"extract": {
+				"sourceTable": {
+					"projectId": "test-project",
+					"datasetId": "ext_ds",
+					"tableId": "ext_tbl"
+				},
+				"destinationFormat": "NEWLINE_DELIMITED_JSON",
+				"destinationUris": ["gs://fake-bucket/export.json"]
+			}
+		}
+	}`
+
+	resp = mustPost(t, apiURL(base, "/jobs"), jobBody)
+	jobResult := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /jobs status = %d, want 200; body = %v", resp.StatusCode, jobResult)
+	}
+
+	if jobResult["kind"] != "bigquery#job" {
+		t.Errorf("kind = %v, want bigquery#job", jobResult["kind"])
+	}
+
+	jobRef, ok := jobResult["jobReference"].(map[string]interface{})
+	if !ok {
+		t.Fatal("jobReference missing")
+	}
+	jobID, _ := jobRef["jobId"].(string)
+
+	// Wait for job to complete
+	deadline := time.Now().Add(5 * time.Second)
+	var finalStatus map[string]interface{}
+	for time.Now().Before(deadline) {
+		getResp := mustGet(t, apiURL(base, "/jobs/"+jobID))
+		getBody := decodeJSON(t, getResp)
+		status, _ := getBody["status"].(map[string]interface{})
+		if status["state"] == "DONE" {
+			finalStatus = getBody
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if finalStatus == nil {
+		t.Fatal("extract job did not complete within deadline")
+	}
+
+	// Verify it's an EXTRACT job
+	config, ok := finalStatus["configuration"].(map[string]interface{})
+	if ok {
+		if config["jobType"] != nil && config["jobType"] != "EXTRACT" {
+			t.Errorf("configuration.jobType = %v, want EXTRACT", config["jobType"])
+		}
+		if config["extract"] == nil {
+			t.Error("configuration.extract missing from completed extract job")
+		}
+	}
+}

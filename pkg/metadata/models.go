@@ -113,9 +113,10 @@ const (
 
 // JobConfig holds the configuration for a job.
 type JobConfig struct {
-	JobType string       `json:"jobType"` // QUERY, LOAD, EXTRACT, COPY
-	Query   *QueryConfig `json:"query,omitempty"`
-	Load    *LoadConfig  `json:"load,omitempty"`
+	JobType string         `json:"jobType"` // QUERY, LOAD, EXTRACT, COPY
+	Query   *QueryConfig   `json:"query,omitempty"`
+	Load    *LoadConfig    `json:"load,omitempty"`
+	Extract *ExtractConfig `json:"extract,omitempty"`
 }
 
 // QueryConfig holds query job configuration.
@@ -134,6 +135,13 @@ type LoadConfig struct {
 	DestinationTable *TableReference `json:"destinationTable"`
 	Schema           *TableSchema    `json:"schema,omitempty"`
 	WriteDisposition string          `json:"writeDisposition,omitempty"`
+}
+
+// ExtractConfig holds extract job configuration.
+type ExtractConfig struct {
+	SourceTable       *TableReference `json:"sourceTable"`
+	DestinationURIs   []string        `json:"destinationUris,omitempty"`
+	DestinationFormat string          `json:"destinationFormat,omitempty"` // CSV, NEWLINE_DELIMITED_JSON, AVRO
 }
 
 // JobStatus holds the current status of a job.
