@@ -46,7 +46,15 @@ func jobKey(projectID, jobID string) string {
 // For QUERY jobs, a goroutine is launched that translates the SQL, executes it,
 // and stores the result. The job transitions PENDING -> RUNNING -> DONE.
 func (m *Manager) Submit(ctx context.Context, projectID string, config metadata.JobConfig) (*metadata.Job, error) {
-	jobID := uuid.New().String()
+	return m.SubmitWithID(ctx, projectID, "", config)
+}
+
+// SubmitWithID creates and executes a job with an optional client-provided ID.
+// If jobID is empty, a UUID is generated.
+func (m *Manager) SubmitWithID(ctx context.Context, projectID, jobID string, config metadata.JobConfig) (*metadata.Job, error) {
+	if jobID == "" {
+		jobID = uuid.New().String()
+	}
 	now := time.Now()
 
 	job := &metadata.Job{

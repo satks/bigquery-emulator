@@ -159,6 +159,12 @@ func (s *Server) insertJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract client-provided job ID if present
+	var clientJobID string
+	if req.JobReference != nil && req.JobReference.JobID != "" {
+		clientJobID = req.JobReference.JobID
+	}
+
 	// Handle QUERY jobs
 	if req.Configuration.Query != nil {
 		useLegacySQL := false
@@ -174,7 +180,7 @@ func (s *Server) insertJob(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		job, err := s.jobMgr.SubmitWithID(r.Context(), projectID, clientJobID, config)
 		if err != nil {
 			apierror.NewInternalError("Failed to submit job: " + err.Error()).WriteResponse(w)
 			return
@@ -228,7 +234,7 @@ func (s *Server) insertJob(w http.ResponseWriter, r *http.Request) {
 			Load:    metaLoadCfg,
 		}
 
-		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		job, err := s.jobMgr.SubmitWithID(r.Context(), projectID, clientJobID, config)
 		if err != nil {
 			apierror.NewInternalError("Failed to submit load job: " + err.Error()).WriteResponse(w)
 			return
@@ -257,7 +263,7 @@ func (s *Server) insertJob(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		job, err := s.jobMgr.Submit(r.Context(), projectID, config)
+		job, err := s.jobMgr.SubmitWithID(r.Context(), projectID, clientJobID, config)
 		if err != nil {
 			apierror.NewInternalError("Failed to submit extract job: " + err.Error()).WriteResponse(w)
 			return
