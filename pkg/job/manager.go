@@ -338,8 +338,18 @@ func (m *Manager) GetQueryResults(ctx context.Context, projectID, jobID string, 
 		}, nil
 	}
 
-	// Apply pagination
-	totalRows := int(result.TotalRows)
+	// For DML/DDL results, Rows is nil — return as-is without slicing
+	if result.Rows == nil {
+		return &query.QueryResult{
+			Schema:      result.Schema,
+			Rows:        nil,
+			TotalRows:   result.TotalRows,
+			JobComplete: true,
+		}, nil
+	}
+
+	// Apply pagination for SELECT results
+	totalRows := len(result.Rows)
 	if startIndex >= totalRows {
 		return &query.QueryResult{
 			Schema:      result.Schema,
