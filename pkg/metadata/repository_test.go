@@ -505,3 +505,132 @@ func TestRepository_ListJobs(t *testing.T) {
 		t.Errorf("ListJobs() got %d, want 2", len(jobs))
 	}
 }
+
+// TestRepository_DeleteDataset_NoGhostData is a regression test for Bug 4:
+// DROP SCHEMA CASCADE must fully clean up so that recreating the same dataset+table
+// does not surface old rows from the dropped schema.
+func TestRepository_DeleteDataset_NoGhostData(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	_ = repo.CreateProject(ctx, Project{ID: "test-project"})
+	now := time.Now()
+
+	// Step 1: Create dataset + table + insert rows
+	_ = repo.CreateDataset(ctx, Dataset{
+		ProjectID:        "test-project",
+		DatasetID:        "ghost_ds",
+		CreationTime:     now,
+		LastModifiedTime: now,
+	})
+	_ = repo.CreateTable(ctx, Table{
+		ProjectID: "test-project",
+		DatasetID: "ghost_ds",
+		TableID:   "ghost_tbl",
+		Type:      "TABLE",
+		Schema: &TableSchema{
+			Fields: []FieldSchema{
+				{Name: "id", Type: "INT64", Mode: "REQUIRED"},
+				{Name: "value", Type: "STRING"},
+			},
+		},
+		CreationTime:     now,
+		LastModifiedTime: now,
+	})
+
+	// Insert old rows
+	_, err := repo.connMgr.Exec(ctx, `INSERT INTO "ghost_ds"."ghost_tbl" (id, value) VALUES (1, 'old_row_1'), (2, 'old_row_2')`)
+	if err != nil {
+		t.Fatalf("insert old rows: %v", err)
+	}
+
+	// Verify old rows exist
+	rows, err := repo.connMgr.Query(ctx, `SELECT COUNT(*) FROM "ghost_ds"."ghost_tbl"`)
+	if err != nil {
+		t.Fatalf("count old rows: %v", err)
+	}
+	var count int64
+	if rows.Next() {
+		_ = rows.Scan(&count)
+	}
+	rows.Close()
+	if count != 2 {
+		t.Fatalf("expected 2 old rows, got %d", count)
+	}
+
+	// Step 2: Delete dataset with deleteContents=true
+	if err := repo.DeleteDataset(ctx, "test-project", "ghost_ds", true); err != nil {
+		t.Fatalf("DeleteDataset() error = %v", err)
+	}
+
+	// Verify metadata is gone
+	_, err = repo.GetDataset(ctx, "test-project", "ghost_ds")
+	if err == nil {
+		t.Fatal("dataset metadata should be gone after delete")
+	}
+	tables, err := repo.ListTables(ctx, "test-project", "ghost_ds")
+	if err != nil {
+		t.Fatalf("ListTables() error = %v", err)
+	}
+	if len(tables) != 0 {
+		t.Fatalf("expected 0 table metadata entries after delete, got %d", len(tables))
+	}
+
+	// Step 3: Recreate the same dataset + table
+	_ = repo.CreateDataset(ctx, Dataset{
+		ProjectID:        "test-project",
+		DatasetID:        "ghost_ds",
+		CreationTime:     now,
+		LastModifiedTime: now,
+	})
+	_ = repo.CreateTable(ctx, Table{
+		ProjectID: "test-project",
+		DatasetID: "ghost_ds",
+		TableID:   "ghost_tbl",
+		Type:      "TABLE",
+		Schema: &TableSchema{
+			Fields: []FieldSchema{
+				{Name: "id", Type: "INT64", Mode: "REQUIRED"},
+				{Name: "value", Type: "STRING"},
+			},
+		},
+		CreationTime:     now,
+		LastModifiedTime: now,
+	})
+
+	// Step 4: Insert new rows only
+	_, err = repo.connMgr.Exec(ctx, `INSERT INTO "ghost_ds"."ghost_tbl" (id, value) VALUES (10, 'new_row_1')`)
+	if err != nil {
+		t.Fatalf("insert new row: %v", err)
+	}
+
+	// Step 5: Query and verify ONLY the new row exists (no ghost data)
+	rows, err = repo.connMgr.Query(ctx, `SELECT id, value FROM "ghost_ds"."ghost_tbl" ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query after recreate: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID    int64
+		Value string
+	}
+	var results []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.ID, &r.Value); err != nil {
+			t.Fatalf("scan row: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 row after recreate, got %d (ghost data detected!)", len(results))
+	}
+	if results[0].ID != 10 || results[0].Value != "new_row_1" {
+		t.Errorf("unexpected row: id=%d value=%q, want id=10 value=new_row_1", results[0].ID, results[0].Value)
+	}
+}

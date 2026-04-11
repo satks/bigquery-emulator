@@ -1,4 +1,4 @@
-.PHONY: build test test-race bench lint clean docker
+.PHONY: build test test-race bench lint clean docker docker-multiarch
 
 # Build the binary
 build:
@@ -28,6 +28,10 @@ clean:
 # Build Docker image
 docker:
 	docker build -t bigquery-emulator .
+
+# Build multi-platform Docker image (amd64 + arm64)
+docker-multiarch:
+	docker buildx build --platform linux/amd64,linux/arm64 -t bigquery-emulator:latest .
 
 # Run the emulator locally
 run: build

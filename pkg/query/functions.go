@@ -124,6 +124,41 @@ func NewFunctionRegistry() *FunctionRegistry {
 		},
 	}
 
+	// TIMESTAMP('x') -> TIMESTAMPTZ 'x' (BQ literal constructor)
+	r.functions["TIMESTAMP"] = FunctionTranslation{
+		Handler: func(args string) string {
+			arg := strings.TrimSpace(args)
+			// If the argument is a quoted string literal, use DuckDB's typed literal syntax
+			if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
+				return fmt.Sprintf("TIMESTAMPTZ %s", arg)
+			}
+			// For expressions (not literals), use a CAST
+			return fmt.Sprintf("CAST(%s AS TIMESTAMPTZ)", arg)
+		},
+	}
+
+	// DATE('x') -> DATE 'x' (BQ literal constructor)
+	r.functions["DATE"] = FunctionTranslation{
+		Handler: func(args string) string {
+			arg := strings.TrimSpace(args)
+			if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
+				return fmt.Sprintf("DATE %s", arg)
+			}
+			return fmt.Sprintf("CAST(%s AS DATE)", arg)
+		},
+	}
+
+	// TIME('x') -> TIME 'x' (BQ literal constructor)
+	r.functions["TIME"] = FunctionTranslation{
+		Handler: func(args string) string {
+			arg := strings.TrimSpace(args)
+			if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
+				return fmt.Sprintf("TIME %s", arg)
+			}
+			return fmt.Sprintf("CAST(%s AS TIME)", arg)
+		},
+	}
+
 	return r
 }
 

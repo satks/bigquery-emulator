@@ -97,6 +97,7 @@ func (m *Manager) SubmitWithID(ctx context.Context, projectID, jobID string, con
 
 // executeQuery runs a query job asynchronously. It translates the SQL,
 // executes it, stores results, and updates job status.
+// It classifies the SQL first: SELECT uses Query(), DDL/DML uses Execute().
 func (m *Manager) executeQuery(projectID, jobID, sql string) {
 	key := jobKey(projectID, jobID)
 	ctx := context.Background()
@@ -117,33 +118,104 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 		return
 	}
 
-	// Execute query
-	result, err := m.executor.Query(ctx, translated)
-	if err != nil {
-		m.failJob(key, ctx, "invalidQuery", err.Error())
-		return
+	// Classify to determine execution path
+	classification := query.ClassifySQL(sql)
+
+	if classification.IsQuery {
+		// SELECT — use Query() to get rows back
+		result, err := m.executor.Query(ctx, translated)
+		if err != nil {
+			m.failJob(key, ctx, "invalidQuery", err.Error())
+			return
+		}
+
+		// Store result and mark DONE
+		now := time.Now()
+		m.mu.Lock()
+		m.results[key] = result
+		if j, ok := m.jobs[key]; ok {
+			j.Status.State = metadata.JobStateDone
+			j.EndTime = &now
+			j.Statistics = metadata.JobStatistics{
+				Query: &metadata.QueryStatistics{
+					TotalBytesProcessed: 0,
+					CacheHit:            false,
+					StatementType:       "SELECT",
+				},
+			}
+			_ = m.repo.UpdateJob(ctx, *j)
+		}
+		m.mu.Unlock()
+
+		m.logger.Debug("query job completed", zap.String("jobID", jobID), zap.Uint64("rows", result.TotalRows))
+	} else {
+		// DDL or DML — use Execute() (no rows returned)
+		execResult, err := m.executor.Execute(ctx, translated)
+		if err != nil {
+			m.failJob(key, ctx, "invalidQuery", err.Error())
+			return
+		}
+
+		// Determine statement type for statistics
+		stmtType := classification.Type.String()
+
+		// Store an empty result so GetQueryResults works
+		now := time.Now()
+		m.mu.Lock()
+		m.results[key] = &query.QueryResult{
+			Schema:      nil,
+			Rows:        nil,
+			TotalRows:   uint64(execResult.RowsAffected),
+			JobComplete: true,
+		}
+		if j, ok := m.jobs[key]; ok {
+			j.Status.State = metadata.JobStateDone
+			j.EndTime = &now
+			j.Statistics = metadata.JobStatistics{
+				Query: &metadata.QueryStatistics{
+					TotalBytesProcessed: 0,
+					CacheHit:            false,
+					StatementType:       stmtType,
+				},
+			}
+			_ = m.repo.UpdateJob(ctx, *j)
+		}
+		m.mu.Unlock()
+
+		m.logger.Debug("DDL/DML job completed", zap.String("jobID", jobID), zap.Int64("rowsAffected", execResult.RowsAffected))
+	}
+}
+
+// CreateCompleted creates a job record that is already in DONE state.
+// Used by the synchronous /queries endpoint to record a job without re-executing.
+func (m *Manager) CreateCompleted(ctx context.Context, projectID string, config metadata.JobConfig, result *query.QueryResult) (*metadata.Job, error) {
+	jobID := uuid.New().String()
+	now := time.Now()
+
+	job := &metadata.Job{
+		ProjectID:    projectID,
+		JobID:        jobID,
+		Config:       config,
+		Status:       metadata.JobStatus{State: metadata.JobStateDone},
+		CreationTime: now,
+		StartTime:    &now,
+		EndTime:      &now,
 	}
 
-	// Store result and mark DONE
-	now := time.Now()
+	if err := m.repo.CreateJob(ctx, *job); err != nil {
+		return nil, fmt.Errorf("create job: %w", err)
+	}
+
+	key := jobKey(projectID, jobID)
 	m.mu.Lock()
-	m.results[key] = result
-	if j, ok := m.jobs[key]; ok {
-		j.Status.State = metadata.JobStateDone
-		j.EndTime = &now
-		j.Statistics = metadata.JobStatistics{
-			Query: &metadata.QueryStatistics{
-				TotalBytesProcessed: 0,
-				CacheHit:            false,
-				StatementType:       "SELECT",
-			},
-		}
-		// Persist updated status
-		_ = m.repo.UpdateJob(ctx, *j)
+	m.jobs[key] = job
+	if result != nil {
+		m.results[key] = result
 	}
 	m.mu.Unlock()
 
-	m.logger.Debug("query job completed", zap.String("jobID", jobID), zap.Uint64("rows", result.TotalRows))
+	cp := *job
+	return &cp, nil
 }
 
 // failJob marks a job as DONE with an error.

@@ -413,6 +413,49 @@ func TestTranslator_TranslateAndExtractOptions(t *testing.T) {
 	}
 }
 
+func TestTranslator_Translate_TIMESTAMP_Literal(t *testing.T) {
+	tr := NewTranslator()
+
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{
+			name:   "TIMESTAMP literal constructor",
+			input:  "SELECT TIMESTAMP('2024-01-01T00:00:00Z')",
+			expect: "SELECT TIMESTAMPTZ '2024-01-01T00:00:00Z'",
+		},
+		{
+			name:   "DATE literal constructor",
+			input:  "SELECT DATE('2024-01-01')",
+			expect: "SELECT DATE '2024-01-01'",
+		},
+		{
+			name:   "TIME literal constructor",
+			input:  "SELECT TIME('12:30:00')",
+			expect: "SELECT TIME '12:30:00'",
+		},
+		{
+			name:   "TIMESTAMP with column expression",
+			input:  "SELECT TIMESTAMP(col) FROM t",
+			expect: "SELECT CAST(col AS TIMESTAMPTZ) FROM t",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tr.Translate(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result != tt.expect {
+				t.Errorf("\n  input:    %q\n  expected: %q\n  got:      %q", tt.input, tt.expect, result)
+			}
+		})
+	}
+}
+
 func BenchmarkTranslator_Translate_Simple(b *testing.B) {
 	tr := NewTranslator()
 	sql := "SELECT id, name FROM users WHERE id = 1"

@@ -166,6 +166,70 @@ func TestFunctionRegistry_Get_Unknown(t *testing.T) {
 	}
 }
 
+func TestFunctionRegistry_Get_Handler_TimestampLiteral(t *testing.T) {
+	r := NewFunctionRegistry()
+
+	tests := []struct {
+		name     string
+		funcName string
+		args     string
+		expect   string
+	}{
+		{
+			name:     "TIMESTAMP with string literal",
+			funcName: "TIMESTAMP",
+			args:     "'2024-01-01T00:00:00Z'",
+			expect:   "TIMESTAMPTZ '2024-01-01T00:00:00Z'",
+		},
+		{
+			name:     "TIMESTAMP with expression",
+			funcName: "TIMESTAMP",
+			args:     "my_col",
+			expect:   "CAST(my_col AS TIMESTAMPTZ)",
+		},
+		{
+			name:     "DATE with string literal",
+			funcName: "DATE",
+			args:     "'2024-01-01'",
+			expect:   "DATE '2024-01-01'",
+		},
+		{
+			name:     "DATE with expression",
+			funcName: "DATE",
+			args:     "my_col",
+			expect:   "CAST(my_col AS DATE)",
+		},
+		{
+			name:     "TIME with string literal",
+			funcName: "TIME",
+			args:     "'12:30:00'",
+			expect:   "TIME '12:30:00'",
+		},
+		{
+			name:     "TIME with expression",
+			funcName: "TIME",
+			args:     "my_col",
+			expect:   "CAST(my_col AS TIME)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr, ok := r.Get(tt.funcName)
+			if !ok {
+				t.Fatalf("%s not found in registry", tt.funcName)
+			}
+			if tr.Handler == nil {
+				t.Fatalf("expected non-nil Handler for %s", tt.funcName)
+			}
+			result := tr.Handler(tt.args)
+			if result != tt.expect {
+				t.Errorf("expected %q, got %q", tt.expect, result)
+			}
+		})
+	}
+}
+
 func TestFunctionRegistry_Get_CaseInsensitive(t *testing.T) {
 	r := NewFunctionRegistry()
 

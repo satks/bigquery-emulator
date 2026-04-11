@@ -1,5 +1,10 @@
 # Build stage
-FROM golang:1.24-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS builder
+
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -13,11 +18,22 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build
-RUN go build -o /bigquery-emulator ./cmd/bigquery-emulator/
+# Build with cross-compilation support
+# For CGO cross-compilation, we need the appropriate toolchain
+RUN if [ "$TARGETARCH" = "arm64" ] && [ "$BUILDPLATFORM" != "linux/arm64" ]; then \
+        apt-get update && apt-get install -y gcc-aarch64-linux-gnu && \
+        CC=aarch64-linux-gnu-gcc GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
+    elif [ "$TARGETARCH" = "amd64" ] && [ "$BUILDPLATFORM" != "linux/amd64" ]; then \
+        apt-get update && apt-get install -y gcc-x86-64-linux-gnu && \
+        CC=x86_64-linux-gnu-gcc GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
+    else \
+        go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
+    fi
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

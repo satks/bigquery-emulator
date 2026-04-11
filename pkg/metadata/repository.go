@@ -262,33 +262,42 @@ func (r *Repository) UpdateDataset(ctx context.Context, ds Dataset) error {
 }
 
 // DeleteDataset removes a dataset from metadata and optionally drops the DuckDB schema.
+// All operations (metadata deletion + schema drop) are wrapped in a single transaction
+// to ensure atomicity. Without this, a partial failure could leave ghost data that
+// reappears when the same dataset name is recreated.
 func (r *Repository) DeleteDataset(ctx context.Context, projectID, datasetID string, deleteContents bool) error {
-	// Delete from metadata
-	_, err := r.connMgr.Exec(ctx,
-		`DELETE FROM _bq_datasets WHERE project_id = $1 AND dataset_id = $2`,
-		projectID, datasetID,
-	)
-	if err != nil {
-		return fmt.Errorf("delete dataset metadata %q: %w", datasetID, err)
-	}
+	err := r.connMgr.ExecTx(ctx, func(tx *sql.Tx) error {
+		// Delete dataset metadata
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM _bq_datasets WHERE project_id = $1 AND dataset_id = $2`,
+			projectID, datasetID,
+		); err != nil {
+			return fmt.Errorf("delete dataset metadata %q: %w", datasetID, err)
+		}
 
-	// Also remove all tables metadata for this dataset
-	_, err = r.connMgr.Exec(ctx,
-		`DELETE FROM _bq_tables WHERE project_id = $1 AND dataset_id = $2`,
-		projectID, datasetID,
-	)
-	if err != nil {
-		return fmt.Errorf("delete dataset tables metadata %q: %w", datasetID, err)
-	}
+		// Delete all tables metadata for this dataset
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM _bq_tables WHERE project_id = $1 AND dataset_id = $2`,
+			projectID, datasetID,
+		); err != nil {
+			return fmt.Errorf("delete dataset tables metadata %q: %w", datasetID, err)
+		}
 
-	// Drop DuckDB schema
-	if deleteContents {
-		_, err = r.connMgr.Exec(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, datasetID))
-	} else {
-		_, err = r.connMgr.Exec(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s"`, datasetID))
-	}
+		// Drop DuckDB schema
+		var dropSQL string
+		if deleteContents {
+			dropSQL = fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, datasetID)
+		} else {
+			dropSQL = fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s"`, datasetID)
+		}
+		if _, err := tx.ExecContext(ctx, dropSQL); err != nil {
+			return fmt.Errorf("drop schema %q: %w", datasetID, err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("drop schema %q: %w", datasetID, err)
+		return err
 	}
 
 	r.logger.Debug("deleted dataset", zap.String("project", projectID), zap.String("dataset", datasetID))

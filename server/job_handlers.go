@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sathish/bigquery-emulator/pkg/metadata"
+	"github.com/sathish/bigquery-emulator/pkg/query"
 	"github.com/sathish/bigquery-emulator/server/apierror"
 )
 
@@ -463,6 +464,8 @@ type queriesInsertRequest struct {
 
 // queriesInsert handles POST /bigquery/v2/projects/{projectId}/queries
 // This is BigQuery's synchronous query API — runs the query and returns results inline.
+// It classifies the SQL to use the correct execution method (Query for SELECT, Execute for DDL/DML)
+// and creates a completed job record without re-executing via jobMgr.Submit.
 func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectId")
 
@@ -484,89 +487,109 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Execute synchronously
-	result, err := s.executor.Query(r.Context(), translated)
-	if err != nil {
-		// Submit as job so caller gets a jobReference with error details
-		config := metadata.JobConfig{
-			JobType: "QUERY",
-			Query:   &metadata.QueryConfig{Query: req.Query},
-		}
-		job, submitErr := s.jobMgr.Submit(r.Context(), projectID, config)
-		if submitErr != nil {
-			apierror.NewInternalError("Query failed: " + err.Error()).WriteResponse(w)
-			return
-		}
-		// Return partial response with jobComplete=false so SDK retries via getQueryResults
-		resp := map[string]interface{}{
-			"kind": "bigquery#queryResponse",
-			"jobReference": map[string]interface{}{
-				"projectId": projectID,
-				"jobId":     job.JobID,
-				"location":  "US",
-			},
-			"jobComplete": false,
-			"cacheHit":    false,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
+	// Classify the SQL to determine execution path
+	classification := query.ClassifySQL(req.Query)
 
-	// Apply maxResults if set
-	rows := result.Rows
-	maxResults := len(rows)
-	if req.MaxResults != nil && *req.MaxResults > 0 && *req.MaxResults < maxResults {
-		maxResults = *req.MaxResults
-		rows = rows[:maxResults]
-	}
-
-	// Build response
-	resp := map[string]interface{}{
-		"kind":        "bigquery#queryResponse",
-		"jobComplete": true,
-		"totalRows":   fmt.Sprintf("%d", result.TotalRows),
-		"cacheHit":    false,
-	}
-
-	// We still need a jobReference — create a completed job record
 	config := metadata.JobConfig{
 		JobType: "QUERY",
 		Query:   &metadata.QueryConfig{Query: req.Query},
 	}
-	job, _ := s.jobMgr.Submit(r.Context(), projectID, config)
-	if job != nil {
-		resp["jobReference"] = map[string]interface{}{
-			"projectId": projectID,
-			"jobId":     job.JobID,
-			"location":  "US",
-		}
-		resp["etag"] = generateEtag(projectID + ":" + job.JobID)
-	}
 
-	// Schema
-	if len(result.Schema) > 0 {
-		fields := make([]map[string]interface{}, len(result.Schema))
-		for i, col := range result.Schema {
-			fields[i] = map[string]interface{}{
-				"name": col.Name,
-				"type": col.Type,
-				"mode": "NULLABLE",
+	if classification.IsQuery {
+		// SELECT — use Query() to get rows back
+		result, err := s.executor.Query(r.Context(), translated)
+		if err != nil {
+			apierror.NewInternalError("Query failed: " + err.Error()).WriteResponse(w)
+			return
+		}
+
+		// Apply maxResults if set
+		rows := result.Rows
+		maxResults := len(rows)
+		if req.MaxResults != nil && *req.MaxResults > 0 && *req.MaxResults < maxResults {
+			maxResults = *req.MaxResults
+			rows = rows[:maxResults]
+		}
+
+		// Build response
+		resp := map[string]interface{}{
+			"kind":        "bigquery#queryResponse",
+			"jobComplete": true,
+			"totalRows":   fmt.Sprintf("%d", result.TotalRows),
+			"cacheHit":    false,
+		}
+
+		// Create a completed job record (no re-execution)
+		job, _ := s.jobMgr.CreateCompleted(r.Context(), projectID, config, result)
+		if job != nil {
+			resp["jobReference"] = map[string]interface{}{
+				"projectId": projectID,
+				"jobId":     job.JobID,
+				"location":  "US",
+			}
+			resp["etag"] = generateEtag(projectID + ":" + job.JobID)
+		}
+
+		// Schema
+		if len(result.Schema) > 0 {
+			fields := make([]map[string]interface{}, len(result.Schema))
+			for i, col := range result.Schema {
+				fields[i] = map[string]interface{}{
+					"name": col.Name,
+					"type": col.Type,
+					"mode": "NULLABLE",
+				}
+			}
+			resp["schema"] = map[string]interface{}{
+				"fields": fields,
 			}
 		}
-		resp["schema"] = map[string]interface{}{
-			"fields": fields,
+
+		// Rows in BQ format
+		resp["rows"] = rowsToBQFormat(rows)
+
+		// Page token if truncated
+		if len(result.Rows) > maxResults {
+			resp["pageToken"] = encodePageToken(maxResults)
 		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	} else {
+		// DDL or DML — use Execute() (no rows returned)
+		execResult, err := s.executor.Execute(r.Context(), translated)
+		if err != nil {
+			apierror.NewInternalError("Statement execution failed: " + err.Error()).WriteResponse(w)
+			return
+		}
+
+		// Build response for DDL/DML
+		dmlResult := &query.QueryResult{
+			Schema:      nil,
+			Rows:        nil,
+			TotalRows:   uint64(execResult.RowsAffected),
+			JobComplete: true,
+		}
+
+		resp := map[string]interface{}{
+			"kind":        "bigquery#queryResponse",
+			"jobComplete": true,
+			"totalRows":   fmt.Sprintf("%d", execResult.RowsAffected),
+			"cacheHit":    false,
+		}
+
+		// Create a completed job record (no re-execution)
+		job, _ := s.jobMgr.CreateCompleted(r.Context(), projectID, config, dmlResult)
+		if job != nil {
+			resp["jobReference"] = map[string]interface{}{
+				"projectId": projectID,
+				"jobId":     job.JobID,
+				"location":  "US",
+			}
+			resp["etag"] = generateEtag(projectID + ":" + job.JobID)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 	}
-
-	// Rows in BQ format
-	resp["rows"] = rowsToBQFormat(rows)
-
-	// Page token if truncated
-	if len(result.Rows) > maxResults {
-		resp["pageToken"] = encodePageToken(maxResults)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }

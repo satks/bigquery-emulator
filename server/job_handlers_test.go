@@ -835,3 +835,129 @@ func TestInsertJob_Extract(t *testing.T) {
 		t.Errorf("destinationUris[0] = %v, want gs://bucket/export.csv", destURIs[0])
 	}
 }
+
+func TestQueriesInsert_DML_NoDoubleExecution(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	// Insert a row via the synchronous /queries endpoint (DML)
+	body := `{"query": "INSERT INTO test_dataset.users (id, name) VALUES (100, 'TestDML')"}`
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /queries DML error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /queries DML status = %d, want 200", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result["kind"] != "bigquery#queryResponse" {
+		t.Errorf("kind = %v, want bigquery#queryResponse", result["kind"])
+	}
+	if result["jobComplete"] != true {
+		t.Errorf("jobComplete = %v, want true", result["jobComplete"])
+	}
+
+	// Verify exactly 1 row was inserted (not 2, which would indicate double execution)
+	// The table already has 3 rows (Alice, Bob, Charlie), so after 1 insert we expect 4.
+	countBody := `{"query": "SELECT COUNT(*) AS cnt FROM test_dataset.users WHERE id = 100"}`
+	countResp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(countBody))
+	if err != nil {
+		t.Fatalf("POST /queries count error = %v", err)
+	}
+	defer countResp.Body.Close()
+
+	var countResult map[string]interface{}
+	json.NewDecoder(countResp.Body).Decode(&countResult)
+
+	if countResult["totalRows"] != "1" {
+		t.Errorf("totalRows = %v, want '1' (DML should execute exactly once, not twice)", countResult["totalRows"])
+	}
+
+	// Also verify the total row count
+	totalBody := `{"query": "SELECT COUNT(*) AS cnt FROM test_dataset.users"}`
+	totalResp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(totalBody))
+	if err != nil {
+		t.Fatalf("POST /queries total count error = %v", err)
+	}
+	defer totalResp.Body.Close()
+
+	var totalResult map[string]interface{}
+	json.NewDecoder(totalResp.Body).Decode(&totalResult)
+
+	if totalResult["totalRows"] != "1" {
+		t.Errorf("total count query returned totalRows = %v, want '1'", totalResult["totalRows"])
+	}
+
+	// Check the actual count value in the row
+	rows, ok := totalResult["rows"].([]interface{})
+	if !ok || len(rows) == 0 {
+		t.Fatal("expected rows in count result")
+	}
+	firstRow := rows[0].(map[string]interface{})
+	fFields := firstRow["f"].([]interface{})
+	countVal := fFields[0].(map[string]interface{})["v"]
+	if fmt.Sprintf("%v", countVal) != "4" {
+		t.Errorf("total user count = %v, want 4 (3 original + 1 inserted once)", countVal)
+	}
+}
+
+func TestQueriesInsert_DDL_CreateSchema(t *testing.T) {
+	baseURL := setupJobTestServer(t)
+
+	// Create a schema (dataset) via the synchronous /queries endpoint (DDL)
+	body := `{"query": "CREATE SCHEMA IF NOT EXISTS new_test_schema"}`
+	resp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST /queries DDL error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /queries DDL status = %d, want 200", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result["kind"] != "bigquery#queryResponse" {
+		t.Errorf("kind = %v, want bigquery#queryResponse", result["kind"])
+	}
+	if result["jobComplete"] != true {
+		t.Errorf("jobComplete = %v, want true", result["jobComplete"])
+	}
+
+	// Verify the schema was created by creating a table in it
+	createTableBody := `{"query": "CREATE TABLE new_test_schema.verify_table (id BIGINT)"}`
+	ctResp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(createTableBody))
+	if err != nil {
+		t.Fatalf("POST /queries create table error = %v", err)
+	}
+	defer ctResp.Body.Close()
+
+	if ctResp.StatusCode != http.StatusOK {
+		t.Fatalf("create table in new schema status = %d, want 200", ctResp.StatusCode)
+	}
+
+	// Query the new table to confirm it exists
+	selectBody := `{"query": "SELECT COUNT(*) FROM new_test_schema.verify_table"}`
+	selResp, err := http.Post(baseURL+"/bigquery/v2/projects/test-project/queries", "application/json", bytes.NewBufferString(selectBody))
+	if err != nil {
+		t.Fatalf("POST /queries select error = %v", err)
+	}
+	defer selResp.Body.Close()
+
+	if selResp.StatusCode != http.StatusOK {
+		t.Fatalf("select from new schema table status = %d, want 200", selResp.StatusCode)
+	}
+
+	var selResult map[string]interface{}
+	json.NewDecoder(selResp.Body).Decode(&selResult)
+
+	if selResult["jobComplete"] != true {
+		t.Errorf("jobComplete = %v, want true", selResult["jobComplete"])
+	}
+}
