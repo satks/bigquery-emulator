@@ -93,16 +93,32 @@ func (t *Translator) Translate(sql string) (string, error) {
 	result := sql
 
 	// 1. Backtick-quoted identifiers -> double-quoted identifiers
+	// Strip project prefix: `project.dataset.table` -> "dataset"."table"
+	// DuckDB has no catalog matching the BQ project ID.
 	result = backtickRe.ReplaceAllStringFunc(result, func(match string) string {
-		// Strip backticks
 		inner := match[1 : len(match)-1]
 		parts := strings.Split(inner, ".")
+		// 3-part: project.dataset.table -> dataset.table
+		if len(parts) == 3 {
+			parts = parts[1:]
+		}
+		// 2-part inside backticks: if first part looks like a project ID
+		// (contains hyphen — dataset names can't have hyphens), strip it
+		if len(parts) == 2 && strings.Contains(parts[0], "-") {
+			parts = parts[1:]
+		}
 		quoted := make([]string, len(parts))
 		for i, p := range parts {
 			quoted[i] = `"` + p + `"`
 		}
 		return strings.Join(quoted, ".")
 	})
+
+	// Also strip unquoted project-qualified identifiers:
+	// "project-id"."dataset"."table" -> "dataset"."table"
+	// This handles the output of backtick conversion when the project was
+	// separately backtick-quoted: `project-id`.dataset.table
+	result = stripProjectPrefix(result)
 
 	// 2. Strip OPTIONS(...) from DDL
 	result = optionsRe.ReplaceAllString(result, "")
@@ -253,4 +269,18 @@ func findMatchingParen(s string, openIdx int) int {
 		}
 	}
 	return -1
+}
+
+// projectQualifiedRe matches a double-quoted project prefix (containing a hyphen)
+// followed by a dot and the rest of the identifier (quoted or unquoted).
+// Examples:
+//   "test-project"."dataset"."table" -> "dataset"."table"
+//   "test-project"."dataset" -> "dataset"
+//   "test-project".dataset.table -> dataset.table
+//   "test-project".dataset -> dataset
+var projectQualifiedRe = regexp.MustCompile(`"([^"]*-[^"]*)"\s*\.`)
+
+// stripProjectPrefix removes double-quoted project prefixes from identifiers.
+func stripProjectPrefix(sql string) string {
+	return projectQualifiedRe.ReplaceAllString(sql, "")
 }

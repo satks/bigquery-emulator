@@ -27,9 +27,9 @@ func TestTranslator_Translate_BacktickToDoubleQuote(t *testing.T) {
 		expect string
 	}{
 		{
-			name:   "three-part identifier",
+			name:   "three-part identifier (project stripped)",
 			input:  "SELECT * FROM `project.dataset.table`",
-			expect: `SELECT * FROM "project"."dataset"."table"`,
+			expect: `SELECT * FROM "dataset"."table"`,
 		},
 		{
 			name:   "two-part identifier",
@@ -473,5 +473,83 @@ func BenchmarkTranslator_Translate_Complex(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = tr.Translate(sql)
+	}
+}
+
+func TestTranslator_Translate_StripProjectPrefix_Backtick3Part(t *testing.T) {
+	tr := NewTranslator()
+	tests := []struct {
+		name, input, wantContains string
+	}{
+		{
+			"CREATE SCHEMA with project",
+			"CREATE SCHEMA IF NOT EXISTS `test-project`.my_dataset",
+			"my_dataset",
+		},
+		{
+			"CREATE TABLE with project",
+			"CREATE TABLE `test-project`.my_dataset.my_table (id BIGINT)",
+			"my_dataset.my_table",
+		},
+		{
+			"INSERT with project",
+			"INSERT INTO `test-project`.my_dataset.my_table VALUES (1, 'hello')",
+			"my_dataset.my_table",
+		},
+		{
+			"SELECT with project",
+			"SELECT * FROM `test-project`.my_dataset.my_table",
+			"my_dataset.my_table",
+		},
+		{
+			"SELECT with project in WHERE",
+			"SELECT * FROM `test-project`.ds.tbl WHERE `test-project`.ds.tbl.id > 1",
+			"ds.tbl",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("Translate() error = %v", err)
+			}
+			if !strings.Contains(result, tc.wantContains) {
+				t.Errorf("result %q should contain %q", result, tc.wantContains)
+			}
+			// Must NOT contain the project ID as a quoted identifier
+			if strings.Contains(result, `"test-project"`) {
+				t.Errorf("result %q still contains project identifier", result)
+			}
+		})
+	}
+}
+
+func TestTranslator_Translate_StripProjectPrefix_2PartBacktick(t *testing.T) {
+	tr := NewTranslator()
+	// `project-id`.dataset -> "dataset" (project stripped because it has a hyphen)
+	result, err := tr.Translate("CREATE SCHEMA `my-project`.my_dataset")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(result, `"my-project"`) {
+		t.Errorf("result %q still contains project", result)
+	}
+	if !strings.Contains(result, "my_dataset") {
+		t.Errorf("result %q missing dataset", result)
+	}
+}
+
+func TestTranslator_Translate_NoStripNonProjectBacktick(t *testing.T) {
+	tr := NewTranslator()
+	// `dataset`.`table` — no hyphens, should keep both parts
+	result, err := tr.Translate("SELECT * FROM `my_dataset`.`my_table`")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(result, `"my_dataset"`) {
+		t.Errorf("result %q missing dataset", result)
+	}
+	if !strings.Contains(result, `"my_table"`) {
+		t.Errorf("result %q missing table", result)
 	}
 }
