@@ -12,11 +12,17 @@ import (
 )
 
 // DDL regex patterns to extract schema/table names from SQL.
+// These use two separate regexes per DDL type: one with IF [NOT] EXISTS, one without.
+// This avoids the greedy match problem where "IF" gets captured as the identifier.
 var (
-	createSchemaRe = regexp.MustCompile(`(?i)CREATE\s+SCHEMA\s+(?:IF\s+NOT\s+EXISTS\s+)?` + identPattern)
-	dropSchemaRe   = regexp.MustCompile(`(?i)DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?` + identPattern)
-	createTableRe  = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?` + twoPartPattern)
-	dropTableRe    = regexp.MustCompile(`(?i)DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?` + twoPartPattern)
+	createSchemaIfRe = regexp.MustCompile(`(?i)CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+` + identPattern)
+	createSchemaRe   = regexp.MustCompile(`(?i)CREATE\s+SCHEMA\s+` + identPattern)
+	dropSchemaIfRe   = regexp.MustCompile(`(?i)DROP\s+SCHEMA\s+IF\s+EXISTS\s+` + identPattern)
+	dropSchemaRe     = regexp.MustCompile(`(?i)DROP\s+SCHEMA\s+` + identPattern)
+	createTableIfRe  = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+IF\s+NOT\s+EXISTS\s+` + twoPartPattern)
+	createTableRe    = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+` + twoPartPattern)
+	dropTableIfRe    = regexp.MustCompile(`(?i)DROP\s+TABLE\s+IF\s+EXISTS\s+` + twoPartPattern)
+	dropTableRe      = regexp.MustCompile(`(?i)DROP\s+TABLE\s+` + twoPartPattern)
 )
 
 // identPattern matches a single identifier (quoted or unquoted).
@@ -24,6 +30,35 @@ const identPattern = `["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?`
 
 // twoPartPattern matches schema.table or just table.
 const twoPartPattern = `["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?(?:\.["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?)?`
+
+// matchCreateSchema tries IF NOT EXISTS first, then plain CREATE SCHEMA.
+func matchCreateSchema(sql string) []string {
+	if m := createSchemaIfRe.FindStringSubmatch(sql); len(m) >= 2 {
+		return m
+	}
+	return createSchemaRe.FindStringSubmatch(sql)
+}
+
+func matchDropSchema(sql string) []string {
+	if m := dropSchemaIfRe.FindStringSubmatch(sql); len(m) >= 2 {
+		return m
+	}
+	return dropSchemaRe.FindStringSubmatch(sql)
+}
+
+func matchCreateTable(sql string) []string {
+	if m := createTableIfRe.FindStringSubmatch(sql); len(m) >= 2 {
+		return m
+	}
+	return createTableRe.FindStringSubmatch(sql)
+}
+
+func matchDropTable(sql string) []string {
+	if m := dropTableIfRe.FindStringSubmatch(sql); len(m) >= 2 {
+		return m
+	}
+	return dropTableRe.FindStringSubmatch(sql)
+}
 
 // syncDDLMetadata detects DDL in the original SQL and syncs metadata.
 // This ensures datasets/tables created via SQL are visible through the REST API.
@@ -40,7 +75,7 @@ func (s *Server) syncDDLMetadata(ctx context.Context, projectID, originalSQL str
 
 func (s *Server) syncCreateDDL(ctx context.Context, projectID, sql string) {
 	// CREATE SCHEMA
-	if m := createSchemaRe.FindStringSubmatch(sql); len(m) >= 2 {
+	if m := matchCreateSchema(sql); len(m) >= 2 {
 		schemaName := unquote(m[1])
 		ds := metadata.Dataset{
 			ProjectID:        projectID,
@@ -62,7 +97,7 @@ func (s *Server) syncCreateDDL(ctx context.Context, projectID, sql string) {
 	}
 
 	// CREATE TABLE
-	if m := createTableRe.FindStringSubmatch(sql); len(m) >= 2 {
+	if m := matchCreateTable(sql); len(m) >= 2 {
 		var schemaName, tableName string
 		if m[2] != "" {
 			schemaName = unquote(m[1])
@@ -96,7 +131,7 @@ func (s *Server) syncCreateDDL(ctx context.Context, projectID, sql string) {
 
 func (s *Server) syncDropDDL(ctx context.Context, projectID, sql string) {
 	// DROP SCHEMA
-	if m := dropSchemaRe.FindStringSubmatch(sql); len(m) >= 2 {
+	if m := matchDropSchema(sql); len(m) >= 2 {
 		schemaName := unquote(m[1])
 		// Remove metadata — the DuckDB schema is already dropped
 		_ = s.repo.DeleteDatasetMetadataOnly(ctx, projectID, schemaName)
@@ -106,7 +141,7 @@ func (s *Server) syncDropDDL(ctx context.Context, projectID, sql string) {
 	}
 
 	// DROP TABLE
-	if m := dropTableRe.FindStringSubmatch(sql); len(m) >= 2 {
+	if m := matchDropTable(sql); len(m) >= 2 {
 		var schemaName, tableName string
 		if m[2] != "" {
 			schemaName = unquote(m[1])
