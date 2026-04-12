@@ -14,6 +14,9 @@ import (
 
 // Manager manages BigQuery job lifecycle: submission, execution, status tracking,
 // and result retrieval. Query results are stored in memory keyed by jobID.
+// DDLSyncFunc is called after DDL execution to sync metadata with the REST API layer.
+type DDLSyncFunc func(ctx context.Context, projectID, originalSQL string)
+
 type Manager struct {
 	mu      sync.RWMutex
 	jobs    map[string]*metadata.Job       // key: "projectID/jobID"
@@ -23,6 +26,12 @@ type Manager struct {
 	executor   *query.Executor
 	translator *query.Translator
 	logger     *zap.Logger
+	ddlSync    DDLSyncFunc // optional callback for DDL metadata sync
+}
+
+// SetDDLSync sets the callback for DDL metadata synchronization.
+func (m *Manager) SetDDLSync(fn DDLSyncFunc) {
+	m.ddlSync = fn
 }
 
 // NewManager creates a new job manager.
@@ -181,6 +190,11 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 			_ = m.repo.UpdateJob(ctx, *j)
 		}
 		m.mu.Unlock()
+
+		// Sync DDL metadata (if callback is set)
+		if m.ddlSync != nil {
+			m.ddlSync(ctx, projectID, sql)
+		}
 
 		m.logger.Debug("DDL/DML job completed", zap.String("jobID", jobID), zap.Int64("rowsAffected", execResult.RowsAffected))
 	}

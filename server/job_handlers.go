@@ -563,6 +563,9 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Sync DDL metadata so SQL-created schemas/tables appear in REST API
+		s.syncDDLMetadata(r.Context(), projectID, req.Query)
+
 		// Build response for DDL/DML
 		dmlResult := &query.QueryResult{
 			Schema:      nil,

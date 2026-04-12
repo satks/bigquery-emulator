@@ -100,6 +100,9 @@ func New(cfg Config) (*Server, error) {
 		logger:     logger,
 	}
 
+	// Wire DDL sync so SQL-created schemas/tables appear in REST API
+	jobMgr.SetDDLSync(s.syncDDLMetadata)
+
 	s.setupRoutes()
 	s.setupStorageRoutes()
 

@@ -563,3 +563,40 @@ func (r *Repository) UpdateJob(ctx context.Context, job Job) error {
 	}
 	return nil
 }
+
+// RegisterTableMetadata inserts table metadata without creating the DuckDB table.
+// Used by DDL sync when the DuckDB table was already created by a SQL statement.
+func (r *Repository) RegisterTableMetadata(ctx context.Context, tbl Table) error {
+	metaJSON, err := json.Marshal(tbl)
+	if err != nil {
+		return fmt.Errorf("marshal table metadata: %w", err)
+	}
+	_, err = r.connMgr.Exec(ctx,
+		`INSERT INTO _bq_tables (project_id, dataset_id, table_id, metadata) VALUES (?, ?, ?, ?)`,
+		tbl.ProjectID, tbl.DatasetID, tbl.TableID, string(metaJSON))
+	if err != nil {
+		return fmt.Errorf("insert table metadata: %w", err)
+	}
+	return nil
+}
+
+// DeleteDatasetMetadataOnly removes dataset metadata without dropping the DuckDB schema.
+// Used by DDL sync when the schema was already dropped by a SQL statement.
+func (r *Repository) DeleteDatasetMetadataOnly(ctx context.Context, projectID, datasetID string) error {
+	_, _ = r.connMgr.Exec(ctx,
+		`DELETE FROM _bq_tables WHERE project_id = ? AND dataset_id = ?`,
+		projectID, datasetID)
+	_, err := r.connMgr.Exec(ctx,
+		`DELETE FROM _bq_datasets WHERE project_id = ? AND dataset_id = ?`,
+		projectID, datasetID)
+	return err
+}
+
+// DeleteTableMetadataOnly removes table metadata without dropping the DuckDB table.
+// Used by DDL sync when the table was already dropped by a SQL statement.
+func (r *Repository) DeleteTableMetadataOnly(ctx context.Context, projectID, datasetID, tableID string) error {
+	_, err := r.connMgr.Exec(ctx,
+		`DELETE FROM _bq_tables WHERE project_id = ? AND dataset_id = ? AND table_id = ?`,
+		projectID, datasetID, tableID)
+	return err
+}
