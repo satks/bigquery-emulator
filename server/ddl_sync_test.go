@@ -19,6 +19,13 @@ func TestMatchCreateSchema(t *testing.T) {
 		{"no match select", "SELECT * FROM my_table", ""},
 		// Regression: must NOT capture "IF" as schema name
 		{"regression IF captured", "CREATE SCHEMA IF NOT EXISTS test_ds", "test_ds"},
+		// After translation, project-qualified becomes just the dataset name
+		// e.g. `test-project`.e2e_test -> e2e_test (translator strips project)
+		{"post-translation plain", "CREATE SCHEMA e2e_test_123", "e2e_test_123"},
+		{"post-translation if not exists", "CREATE SCHEMA IF NOT EXISTS e2e_test_123", "e2e_test_123"},
+		// Double-quoted (translator output for backtick identifiers)
+		{"double-quoted", `CREATE SCHEMA "my_dataset"`, "my_dataset"},
+		{"double-quoted if not exists", `CREATE SCHEMA IF NOT EXISTS "my_dataset"`, "my_dataset"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,5 +270,56 @@ func TestDDLSync_DropSchema_Integration(t *testing.T) {
 		if ds.DatasetID == "drop_ds" {
 			t.Error("drop_ds still in metadata after DROP")
 		}
+	}
+}
+
+// Integration: project-qualified CREATE SCHEMA via translated SQL
+func TestDDLSync_ProjectQualified_CreateSchema(t *testing.T) {
+	cfg := Config{
+		Host:      "localhost",
+		Port:      0,
+		ProjectID: "test-project",
+		Database:  ":memory:",
+	}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer srv.Stop(nil)
+
+	ctx := t.Context()
+
+	// Simulate what happens when SDK sends: CREATE SCHEMA IF NOT EXISTS `test-project`.e2e_test
+	// The translator strips the project prefix before it reaches syncDDLMetadata
+	originalSQL := "CREATE SCHEMA IF NOT EXISTS `test-project`.e2e_test"
+	translated, err := srv.translator.Translate(originalSQL)
+	if err != nil {
+		t.Fatalf("Translate error = %v", err)
+	}
+
+	_, err = srv.executor.Execute(ctx, translated)
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	// Pass translated SQL (not original) — this is the fix
+	srv.syncDDLMetadata(ctx, "test-project", translated)
+
+	datasets, _ := srv.repo.ListDatasets(ctx, "test-project")
+	found := false
+	for _, ds := range datasets {
+		if ds.DatasetID == "e2e_test" {
+			found = true
+		}
+		if ds.DatasetID == "IF" {
+			t.Errorf("BUG: captured 'IF' as dataset name instead of 'e2e_test'")
+		}
+	}
+	if !found {
+		names := make([]string, len(datasets))
+		for i, ds := range datasets {
+			names[i] = ds.DatasetID
+		}
+		t.Errorf("e2e_test not found in datasets: %v", names)
 	}
 }

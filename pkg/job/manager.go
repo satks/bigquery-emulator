@@ -191,9 +191,10 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 		}
 		m.mu.Unlock()
 
-		// Sync DDL metadata (if callback is set)
+		// Sync DDL metadata (if callback is set).
+		// Use translated SQL (project prefix stripped, backticks converted).
 		if m.ddlSync != nil {
-			m.ddlSync(ctx, projectID, sql)
+			m.ddlSync(ctx, projectID, translated)
 		}
 
 		m.logger.Debug("DDL/DML job completed", zap.String("jobID", jobID), zap.Int64("rowsAffected", execResult.RowsAffected))
