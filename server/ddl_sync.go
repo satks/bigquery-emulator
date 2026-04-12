@@ -8,6 +8,7 @@ import (
 
 	"github.com/sathish/bigquery-emulator/pkg/metadata"
 	"github.com/sathish/bigquery-emulator/pkg/query"
+	"github.com/sathish/bigquery-emulator/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -113,6 +114,7 @@ func (s *Server) syncCreateDDL(ctx context.Context, projectID, sql string) {
 			DatasetID:        schemaName,
 			TableID:          tableName,
 			Type:             "TABLE",
+			Schema:           s.introspectTableSchema(ctx, schemaName, tableName),
 			CreationTime:     time.Now(),
 			LastModifiedTime: time.Now(),
 		}
@@ -160,4 +162,44 @@ func (s *Server) syncDropDDL(ctx context.Context, projectID, sql string) {
 // unquote removes surrounding double quotes if present.
 func unquote(s string) string {
 	return strings.Trim(s, `"'`)
+}
+
+// introspectTableSchema queries DuckDB information_schema to get column definitions
+// for a table that was created via SQL DDL.
+func (s *Server) introspectTableSchema(ctx context.Context, schemaName, tableName string) *metadata.TableSchema {
+	rows, err := s.connMgr.Query(ctx,
+		`SELECT column_name, data_type, is_nullable
+		 FROM information_schema.columns
+		 WHERE table_schema = ? AND table_name = ?
+		 ORDER BY ordinal_position`,
+		schemaName, tableName)
+	if err != nil {
+		s.logger.Debug("DDL sync: failed to introspect schema", zap.Error(err))
+		return nil
+	}
+	defer rows.Close()
+
+	typeMapper := types.NewTypeMapper()
+	var fields []metadata.FieldSchema
+	for rows.Next() {
+		var colName, dataType, isNullable string
+		if err := rows.Scan(&colName, &dataType, &isNullable); err != nil {
+			continue
+		}
+		mode := "NULLABLE"
+		if isNullable == "NO" {
+			mode = "REQUIRED"
+		}
+		bqType := typeMapper.DuckDBToBQ(strings.ToUpper(dataType))
+		fields = append(fields, metadata.FieldSchema{
+			Name: colName,
+			Type: bqType,
+			Mode: mode,
+		})
+	}
+
+	if len(fields) == 0 {
+		return nil
+	}
+	return &metadata.TableSchema{Fields: fields}
 }

@@ -323,3 +323,50 @@ func TestDDLSync_ProjectQualified_CreateSchema(t *testing.T) {
 		t.Errorf("e2e_test not found in datasets: %v", names)
 	}
 }
+
+// Integration: SQL-created table should have schema in metadata
+func TestDDLSync_CreateTable_HasSchema(t *testing.T) {
+	cfg := Config{
+		Host:      "localhost",
+		Port:      0,
+		ProjectID: "test-project",
+		Database:  ":memory:",
+	}
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer srv.Stop(nil)
+
+	ctx := t.Context()
+
+	srv.executor.Execute(ctx, `CREATE SCHEMA test_ds`)
+	srv.syncDDLMetadata(ctx, "test-project", "CREATE SCHEMA test_ds")
+
+	srv.executor.Execute(ctx, `CREATE TABLE test_ds.users (user_id VARCHAR, email VARCHAR NOT NULL, age BIGINT)`)
+	srv.syncDDLMetadata(ctx, "test-project", "CREATE TABLE test_ds.users (user_id VARCHAR, email VARCHAR NOT NULL, age BIGINT)")
+
+	tbl, err := srv.repo.GetTable(ctx, "test-project", "test_ds", "users")
+	if err != nil {
+		t.Fatalf("GetTable error = %v", err)
+	}
+
+	if tbl.Schema == nil {
+		t.Fatal("schema is nil — column introspection failed")
+	}
+	if len(tbl.Schema.Fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(tbl.Schema.Fields))
+	}
+
+	// Verify column details
+	fields := tbl.Schema.Fields
+	if fields[0].Name != "user_id" || fields[0].Type != "STRING" {
+		t.Errorf("field 0: got %s/%s, want user_id/STRING", fields[0].Name, fields[0].Type)
+	}
+	if fields[1].Name != "email" || fields[1].Mode != "REQUIRED" {
+		t.Errorf("field 1: got %s/%s, want email/REQUIRED", fields[1].Name, fields[1].Mode)
+	}
+	if fields[2].Name != "age" || fields[2].Type != "INT64" {
+		t.Errorf("field 2: got %s/%s, want age/INT64", fields[2].Name, fields[2].Type)
+	}
+}
