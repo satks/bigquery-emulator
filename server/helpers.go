@@ -90,7 +90,10 @@ func formatValue(v interface{}) interface{} {
 	case []byte:
 		return string(val)
 	case time.Time:
-		return val.Format(time.RFC3339Nano)
+		// BigQuery returns timestamps as epoch seconds (float string).
+		// Both Go and Node.js SDKs expect this format, not ISO 8601.
+		epochSec := float64(val.UnixMicro()) / 1e6
+		return fmt.Sprintf("%g", epochSec)
 	default:
 		return fmt.Sprintf("%v", val)
 	}
