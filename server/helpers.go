@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -113,6 +114,21 @@ func decodePageToken(token string) int {
 	return val
 }
 
+// colMode returns the mode from a ColumnMeta, defaulting to NULLABLE.
+func colMode(col interface{}) string {
+	// Use JSON roundtrip to extract Mode field from any ColumnMeta-like struct
+	type hasMode struct{ Mode string }
+	data, err := json.Marshal(col)
+	if err != nil {
+		return "NULLABLE"
+	}
+	var m hasMode
+	if err := json.Unmarshal(data, &m); err != nil || m.Mode == "" {
+		return "NULLABLE"
+	}
+	return m.Mode
+}
+
 // formatValue converts a Go value to BQ JSON wire format.
 // bqType is the BigQuery schema type (e.g., "TIMESTAMP", "DATE") which
 // determines the exact string format both Go and Node.js SDKs expect.
@@ -122,6 +138,23 @@ func formatValue(v interface{}, bqType string) interface{} {
 	}
 
 	upperType := strings.ToUpper(bqType)
+
+	// Handle []byte BEFORE the generic slice check ([]byte is a slice)
+	if b, ok := v.([]byte); ok {
+		return base64.StdEncoding.EncodeToString(b)
+	}
+
+	// Handle slices (REPEATED/array columns)
+	// BQ format: [{"v": "elem1"}, {"v": "elem2"}]
+	if reflect.TypeOf(v).Kind() == reflect.Slice {
+		rv := reflect.ValueOf(v)
+		arr := make([]map[string]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			elem := rv.Index(i).Interface()
+			arr[i] = map[string]interface{}{"v": formatValue(elem, bqType)}
+		}
+		return arr
+	}
 
 	// Handle time.Time based on the BQ schema type
 	if t, ok := v.(time.Time); ok {
@@ -143,11 +176,6 @@ func formatValue(v interface{}, bqType string) interface{} {
 			// Unknown type with time.Time — default to TIMESTAMP (microseconds)
 			return fmt.Sprintf("%d", t.UnixMicro())
 		}
-	}
-
-	// Handle []byte — BYTES columns must be base64 encoded
-	if b, ok := v.([]byte); ok {
-		return base64.StdEncoding.EncodeToString(b)
 	}
 
 	// Handle bool — must be lowercase "true"/"false"

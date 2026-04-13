@@ -429,7 +429,7 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 				fields[i] = map[string]interface{}{
 					"name": col.Name,
 					"type": col.Type,
-					"mode": "NULLABLE",
+					"mode": colMode(col),
 				}
 			}
 			resp["schema"] = map[string]interface{}{
@@ -537,7 +537,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 				fields[i] = map[string]interface{}{
 					"name": col.Name,
 					"type": col.Type,
-					"mode": "NULLABLE",
+					"mode": colMode(col),
 				}
 			}
 			resp["schema"] = map[string]interface{}{

@@ -12,6 +12,7 @@ type QueryResult struct {
 type ColumnMeta struct {
 	Name string // Column name
 	Type string // BigQuery type (e.g., "INT64", "STRING")
+	Mode string // "NULLABLE", "REQUIRED", or "REPEATED" (for arrays)
 }
 
 // ExecResult holds the result of a non-query execution (DDL/DML).

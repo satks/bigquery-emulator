@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/sathish/bigquery-emulator/pkg/connection"
 	"github.com/sathish/bigquery-emulator/pkg/types"
@@ -67,10 +68,21 @@ func (e *Executor) scanRows(rows *sql.Rows) (*QueryResult, error) {
 	schema := make([]ColumnMeta, len(colTypes))
 	for i, ct := range colTypes {
 		duckType := ct.DatabaseTypeName()
+		mode := "NULLABLE"
+
+		// Detect array types: VARCHAR[], BIGINT[], etc.
+		if strings.HasSuffix(duckType, "[]") {
+			baseType := strings.TrimSuffix(duckType, "[]")
+			bqType := e.typeMapper.DuckDBToBQ(baseType)
+			schema[i] = ColumnMeta{Name: ct.Name(), Type: bqType, Mode: "REPEATED"}
+			continue
+		}
+
 		bqType := e.typeMapper.DuckDBToBQ(duckType)
 		schema[i] = ColumnMeta{
 			Name: ct.Name(),
 			Type: bqType,
+			Mode: mode,
 		}
 	}
 
