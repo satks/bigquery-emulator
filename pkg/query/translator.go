@@ -45,6 +45,9 @@ var (
 
 	// optionKVRe matches key='value' pairs inside OPTIONS().
 	optionKVRe = regexp.MustCompile(`(\w+)\s*=\s*'([^']*)'`)
+
+	// arrayTypeRe matches ARRAY<TYPE> to convert to DuckDB TYPE[] syntax.
+	arrayTypeRe = regexp.MustCompile(`(?i)\bARRAY\s*<\s*(\w+)\s*>`)
 )
 
 // bqTypeToDuckDB maps BigQuery type names to DuckDB type names for CAST expressions.
@@ -122,6 +125,19 @@ func (t *Translator) Translate(sql string) (string, error) {
 
 	// 2. Strip OPTIONS(...) from DDL
 	result = optionsRe.ReplaceAllString(result, "")
+
+	// 2b. ARRAY<TYPE> -> TYPE[] (BQ array syntax to DuckDB)
+	result = arrayTypeRe.ReplaceAllStringFunc(result, func(match string) string {
+		m := arrayTypeRe.FindStringSubmatch(match)
+		if len(m) < 2 {
+			return match
+		}
+		innerType := strings.ToUpper(m[1])
+		if duckType, ok := bqTypeToDuckDB[innerType]; ok {
+			return duckType + "[]"
+		}
+		return innerType + "[]"
+	})
 
 	// 3. CURRENT_TIMESTAMP() -> current_timestamp
 	result = currentTimestampRe.ReplaceAllString(result, "current_timestamp")
