@@ -438,7 +438,7 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Convert rows to BQ format: {"f": [{"v": "value1"}, {"v": "value2"}]}
-		rows := rowsToBQFormat(result.Rows)
+		rows := rowsToBQFormat(result.Rows, result.Schema)
 		resp["rows"] = rows
 
 		// Page token: if there are more rows beyond this page
@@ -546,7 +546,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Rows in BQ format
-		resp["rows"] = rowsToBQFormat(rows)
+		resp["rows"] = rowsToBQFormat(rows, result.Schema)
 
 		// Page token if truncated
 		if len(result.Rows) > maxResults {

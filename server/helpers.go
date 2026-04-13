@@ -36,7 +36,15 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 // rowsToBQFormat converts [][]interface{} to BigQuery row format:
 // [{"f": [{"v": "value1"}, {"v": "value2"}]}, ...]
 // NULL values are represented as {"v": null}.
-func rowsToBQFormat(rows [][]interface{}) []map[string]interface{} {
+// columnTypes is an optional list of BQ type strings (e.g., "TIMESTAMP", "DATE")
+// for type-aware value formatting. Pass nil for default formatting.
+func rowsToBQFormat(rows [][]interface{}, columnTypes ...interface{}) []map[string]interface{} {
+	// Extract type strings from schema (accepts []query.ColumnMeta or similar)
+	var types []string
+	if len(columnTypes) > 0 {
+		types = extractTypeStrings(columnTypes[0])
+	}
+
 	bqRows := make([]map[string]interface{}, len(rows))
 	for i, row := range rows {
 		fields := make([]map[string]interface{}, len(row))
@@ -44,12 +52,36 @@ func rowsToBQFormat(rows [][]interface{}) []map[string]interface{} {
 			if val == nil {
 				fields[j] = map[string]interface{}{"v": nil}
 			} else {
-				fields[j] = map[string]interface{}{"v": formatValue(val)}
+				bqType := ""
+				if j < len(types) {
+					bqType = types[j]
+				}
+				fields[j] = map[string]interface{}{"v": formatValue(val, bqType)}
 			}
 		}
 		bqRows[i] = map[string]interface{}{"f": fields}
 	}
 	return bqRows
+}
+
+// extractTypeStrings pulls BQ type strings from a schema slice.
+// Accepts any slice of structs with a Type string field (e.g., query.ColumnMeta).
+func extractTypeStrings(schema interface{}) []string {
+	// Use reflection-free approach: try JSON roundtrip
+	type hasType struct{ Type string }
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	var cols []hasType
+	if err := json.Unmarshal(data, &cols); err != nil {
+		return nil
+	}
+	types := make([]string, len(cols))
+	for i, c := range cols {
+		types[i] = c.Type
+	}
+	return types
 }
 
 // generateEtag generates a deterministic etag from a resource identifier.
@@ -81,20 +113,69 @@ func decodePageToken(token string) int {
 	return val
 }
 
-// formatValue converts a Go value to a string representation for BQ JSON output.
-func formatValue(v interface{}) interface{} {
+// formatValue converts a Go value to BQ JSON wire format.
+// bqType is the BigQuery schema type (e.g., "TIMESTAMP", "DATE") which
+// determines the exact string format both Go and Node.js SDKs expect.
+func formatValue(v interface{}, bqType string) interface{} {
 	if v == nil {
 		return nil
 	}
-	switch val := v.(type) {
-	case []byte:
-		return string(val)
-	case time.Time:
-		// BigQuery returns timestamps as epoch microseconds (integer string).
-		// Go SDK: strconv.ParseInt(val, 10, 64) -> time.UnixMicro(i)
-		// Node.js SDK: BigInt(value) * BigInt(1000)
-		return fmt.Sprintf("%d", val.UnixMicro())
-	default:
-		return fmt.Sprintf("%v", val)
+
+	upperType := strings.ToUpper(bqType)
+
+	// Handle time.Time based on the BQ schema type
+	if t, ok := v.(time.Time); ok {
+		switch upperType {
+		case "TIMESTAMP":
+			// Go SDK: strconv.ParseInt(v, 10, 64) -> time.UnixMicro
+			// Node.js SDK: BigInt(v) * BigInt(1000)
+			return fmt.Sprintf("%d", t.UnixMicro())
+		case "DATE":
+			// Go SDK: civil.ParseDate expects "YYYY-MM-DD"
+			return t.Format("2006-01-02")
+		case "TIME":
+			// Go SDK: civil.ParseTime expects "HH:MM:SS.ffffff"
+			return t.Format("15:04:05.000000")
+		case "DATETIME":
+			// Go SDK: civil.ParseDateTime expects "YYYY-MM-DD HH:MM:SS.ffffff"
+			return t.Format("2006-01-02 15:04:05.000000")
+		default:
+			// Unknown type with time.Time — default to TIMESTAMP (microseconds)
+			return fmt.Sprintf("%d", t.UnixMicro())
+		}
 	}
+
+	// Handle []byte — BYTES columns must be base64 encoded
+	if b, ok := v.([]byte); ok {
+		return base64.StdEncoding.EncodeToString(b)
+	}
+
+	// Handle bool — must be lowercase "true"/"false"
+	if b, ok := v.(bool); ok {
+		if b {
+			return "true"
+		}
+		return "false"
+	}
+
+	// Handle float — use strconv to avoid scientific notation
+	switch f := v.(type) {
+	case float64:
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(f), 'f', -1, 32)
+	}
+
+	// Handle integers — plain decimal string
+	switch i := v.(type) {
+	case int64:
+		return strconv.FormatInt(i, 10)
+	case int32:
+		return strconv.FormatInt(int64(i), 10)
+	case int:
+		return strconv.Itoa(i)
+	}
+
+	// Default: fmt.Sprintf
+	return fmt.Sprintf("%v", v)
 }

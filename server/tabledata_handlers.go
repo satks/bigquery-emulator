@@ -82,7 +82,7 @@ func (s *Server) listTableData(w http.ResponseWriter, r *http.Request) {
 		"totalRows": fmt.Sprintf("%d", totalRows),
 	}
 
-	rows := rowsToBQFormat(result.Rows)
+	rows := rowsToBQFormat(result.Rows, result.Schema)
 	resp["rows"] = rows
 
 	// Page token (opaque base64 for tabledata)
