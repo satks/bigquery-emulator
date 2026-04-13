@@ -31,11 +31,15 @@ func NewTypeMapper() *TypeMapper {
 		BQTime:       "TIME",
 		BQTimestamp:  "TIMESTAMPTZ",
 		BQDatetime:   "TIMESTAMP",
-		BQGeography:  "VARCHAR", // Store as WKT string; spatial extension may not be available
+		BQGeography:  "VARCHAR",
 		BQJson:       "JSON",
 		BQInterval:   "INTERVAL",
-		BQStruct:     "STRUCT",
-		BQRecord:     "STRUCT", // alias for STRUCT
+		BQStruct:     "STRUCT",  // BQStruct = "RECORD" now
+		// Standard SQL aliases (accepted on write/CAST path)
+		"INT64":   "BIGINT",
+		"FLOAT64": "DOUBLE",
+		"BOOL":    "BOOLEAN",
+		"STRUCT":  "STRUCT",
 	}
 
 	for bq, duck := range bqMappings {

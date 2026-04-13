@@ -366,7 +366,7 @@ func TestDDLSync_CreateTable_HasSchema(t *testing.T) {
 	if fields[1].Name != "email" || fields[1].Mode != "REQUIRED" {
 		t.Errorf("field 1: got %s/%s, want email/REQUIRED", fields[1].Name, fields[1].Mode)
 	}
-	if fields[2].Name != "age" || fields[2].Type != "INT64" {
-		t.Errorf("field 2: got %s/%s, want age/INT64", fields[2].Name, fields[2].Type)
+	if fields[2].Name != "age" || fields[2].Type != "INTEGER" {
+		t.Errorf("field 2: got %s/%s, want age/INTEGER", fields[2].Name, fields[2].Type)
 	}
 }

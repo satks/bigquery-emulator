@@ -13,8 +13,8 @@ func TestFieldSchema_HasRequiredFields(t *testing.T) {
 	if f.Name != "user_id" {
 		t.Errorf("expected Name 'user_id', got %q", f.Name)
 	}
-	if f.Type != "INT64" {
-		t.Errorf("expected Type 'INT64', got %q", f.Type)
+	if f.Type != "INTEGER" {
+		t.Errorf("expected Type 'INTEGER', got %q", f.Type)
 	}
 }
 
@@ -189,12 +189,12 @@ func TestTypeConstants(t *testing.T) {
 		}
 	}
 
-	// RECORD is an alias for STRUCT in BQ, but has different constant value
+	// Both BQStruct and BQRecord map to "RECORD" (REST API name)
 	if BQRecord != "RECORD" {
 		t.Errorf("BQRecord should be 'RECORD', got %q", BQRecord)
 	}
-	if BQStruct != "STRUCT" {
-		t.Errorf("BQStruct should be 'STRUCT', got %q", BQStruct)
+	if BQStruct != "RECORD" {
+		t.Errorf("BQStruct should be 'RECORD', got %q", BQStruct)
 	}
 }
 

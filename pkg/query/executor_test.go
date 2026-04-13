@@ -442,9 +442,9 @@ func TestExecutor_Query_TypeMapping(t *testing.T) {
 
 	// Verify schema types are BigQuery types
 	expectedTypes := map[string]string{
-		"i":  "INT64",
-		"f":  "FLOAT64",
-		"b":  "BOOL",
+		"i":  "INTEGER",
+		"f":  "FLOAT",
+		"b":  "BOOLEAN",
 		"s":  "STRING",
 		"d":  "DATE",
 		"ts": "TIMESTAMP", // TIMESTAMP in DuckDB -> TIMESTAMP in BQ

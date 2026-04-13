@@ -1,12 +1,15 @@
 package types
 
-// BigQuery type constants representing all supported BigQuery data types.
+// BigQuery type constants — REST API names (what the SDKs expect in schema responses).
+// The Go SDK read path does direct string match: INTEGER, FLOAT, BOOLEAN, RECORD.
+// Standard SQL aliases (INT64, FLOAT64, BOOL, STRUCT) are accepted on the WRITE path
+// but must NOT be returned in schema responses.
 const (
-	BQInt64      = "INT64"
-	BQFloat64    = "FLOAT64"
+	BQInt64      = "INTEGER"  // REST API name (not "INT64")
+	BQFloat64    = "FLOAT"    // REST API name (not "FLOAT64")
 	BQNumeric    = "NUMERIC"
 	BQBigNumeric = "BIGNUMERIC"
-	BQBool       = "BOOL"
+	BQBool       = "BOOLEAN"  // REST API name (not "BOOL")
 	BQString     = "STRING"
 	BQBytes      = "BYTES"
 	BQDate       = "DATE"
@@ -16,8 +19,8 @@ const (
 	BQGeography  = "GEOGRAPHY"
 	BQJson       = "JSON"
 	BQArray      = "ARRAY"
-	BQStruct     = "STRUCT"
-	BQRecord     = "RECORD"   // alias for STRUCT
+	BQStruct     = "RECORD"   // REST API name (not "STRUCT")
+	BQRecord     = "RECORD"
 	BQInterval   = "INTERVAL"
 )
 
