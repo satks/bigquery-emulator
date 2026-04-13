@@ -50,6 +50,23 @@ var (
 	arrayTypeRe = regexp.MustCompile(`(?i)\bARRAY\s*<\s*(\w+)\s*>`)
 )
 
+// ddlTypeReplacement maps a BQ-only type name to its DuckDB equivalent via regex.
+type ddlTypeReplacement struct {
+	re   *regexp.Regexp
+	duck string
+}
+
+// ddlTypeReplacements are BQ type names that DuckDB doesn't recognize natively.
+// These are applied as whole-word replacements in DDL (CREATE TABLE column defs).
+var ddlTypeReplacements = []ddlTypeReplacement{
+	{regexp.MustCompile(`(?i)\bINT64\b`), "BIGINT"},
+	{regexp.MustCompile(`(?i)\bFLOAT64\b`), "DOUBLE"},
+	{regexp.MustCompile(`(?i)\bBOOL\b`), "BOOLEAN"},
+	{regexp.MustCompile(`(?i)\bSTRING\b`), "VARCHAR"},
+	{regexp.MustCompile(`(?i)\bBYTES\b`), "BLOB"},
+	{regexp.MustCompile(`(?i)\bBIGNUMERIC\b`), "DECIMAL(76,38)"},
+}
+
 // bqTypeToDuckDB maps BigQuery type names to DuckDB type names for CAST expressions.
 var bqTypeToDuckDB = map[string]string{
 	"INT64":      "BIGINT",
@@ -138,6 +155,12 @@ func (t *Translator) Translate(sql string) (string, error) {
 		}
 		return innerType + "[]"
 	})
+
+	// 2c. Replace BQ-only type names with DuckDB equivalents in DDL column definitions.
+	// Only replace types that DuckDB doesn't recognize natively.
+	for _, ddlType := range ddlTypeReplacements {
+		result = ddlType.re.ReplaceAllString(result, ddlType.duck)
+	}
 
 	// 3. CURRENT_TIMESTAMP() -> current_timestamp
 	result = currentTimestampRe.ReplaceAllString(result, "current_timestamp")
