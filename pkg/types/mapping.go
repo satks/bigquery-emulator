@@ -66,7 +66,7 @@ func NewTypeMapper() *TypeMapper {
 		"DATE":           BQDate,
 		"TIME":           BQTime,
 		"TIMESTAMPTZ":    BQTimestamp,
-		"TIMESTAMP":      BQDatetime,
+		"TIMESTAMP":      BQTimestamp,  // Map both to TIMESTAMP — BQ DATETIME is rarely used in emulator
 		"TIMESTAMP WITH TIME ZONE": BQTimestamp,
 		"JSON":           BQJson,
 		"INTERVAL":       BQInterval,

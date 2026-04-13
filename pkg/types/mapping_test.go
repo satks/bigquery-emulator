@@ -71,7 +71,7 @@ func TestTypeMapper_DuckDBToBQ_AllBaseTypes(t *testing.T) {
 		{"DATE", BQDate},
 		{"TIME", BQTime},
 		{"TIMESTAMPTZ", BQTimestamp},
-		{"TIMESTAMP", BQDatetime},
+		{"TIMESTAMP", BQTimestamp},
 		{"JSON", BQJson},
 		{"INTERVAL", BQInterval},
 		{"STRUCT", BQStruct},

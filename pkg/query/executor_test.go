@@ -447,7 +447,7 @@ func TestExecutor_Query_TypeMapping(t *testing.T) {
 		"b":  "BOOL",
 		"s":  "STRING",
 		"d":  "DATE",
-		"ts": "DATETIME", // TIMESTAMP in DuckDB -> DATETIME in BQ
+		"ts": "TIMESTAMP", // TIMESTAMP in DuckDB -> TIMESTAMP in BQ
 	}
 
 	for _, col := range result.Schema {
