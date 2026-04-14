@@ -363,6 +363,17 @@ func (m *Manager) GetQueryResults(ctx context.Context, projectID, jobID string, 
 		}, nil
 	}
 
+	// maxResults=0: return metadata only (schema, totalRows) with no rows.
+	// The Go SDK uses this as a completion check before fetching actual data.
+	if maxResults == 0 {
+		return &query.QueryResult{
+			Schema:      result.Schema,
+			Rows:        nil,
+			TotalRows:   result.TotalRows,
+			JobComplete: true,
+		}, nil
+	}
+
 	// Apply pagination for SELECT results
 	totalRows := len(result.Rows)
 	if startIndex >= totalRows {

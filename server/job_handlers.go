@@ -396,7 +396,7 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if v := r.URL.Query().Get("maxResults"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			maxResults = parsed
 		}
 	}
