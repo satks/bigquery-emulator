@@ -120,12 +120,13 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 	}
 	m.mu.Unlock()
 
-	// Translate SQL
-	translated, err := m.translator.Translate(sql)
+	// Translate SQL (may return multiple statements for MERGE)
+	translatedStmts, err := m.translator.TranslateMulti(sql)
 	if err != nil {
 		m.failJob(key, ctx, "invalidQuery", fmt.Sprintf("SQL translation error: %s", err.Error()))
 		return
 	}
+	translated := translatedStmts[0]
 
 	// Classify to determine execution path
 	classification := query.ClassifySQL(sql)
@@ -159,10 +160,15 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 		m.logger.Debug("query job completed", zap.String("jobID", jobID), zap.Uint64("rows", result.TotalRows))
 	} else {
 		// DDL or DML — use Execute() (no rows returned)
-		execResult, err := m.executor.Execute(ctx, translated)
-		if err != nil {
-			m.failJob(key, ctx, "invalidQuery", err.Error())
-			return
+		// MERGE may produce multiple statements — execute all
+		var totalAffected int64
+		for _, stmt := range translatedStmts {
+			execResult, err := m.executor.Execute(ctx, stmt)
+			if err != nil {
+				m.failJob(key, ctx, "invalidQuery", err.Error())
+				return
+			}
+			totalAffected += execResult.RowsAffected
 		}
 
 		// Determine statement type for statistics
@@ -174,7 +180,7 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 		m.results[key] = &query.QueryResult{
 			Schema:      nil,
 			Rows:        nil,
-			TotalRows:   uint64(execResult.RowsAffected),
+			TotalRows:   uint64(totalAffected),
 			JobComplete: true,
 		}
 		if j, ok := m.jobs[key]; ok {
@@ -192,12 +198,13 @@ func (m *Manager) executeQuery(projectID, jobID, sql string) {
 		m.mu.Unlock()
 
 		// Sync DDL metadata (if callback is set).
-		// Use translated SQL (project prefix stripped, backticks converted).
 		if m.ddlSync != nil {
-			m.ddlSync(ctx, projectID, translated)
+			for _, stmt := range translatedStmts {
+				m.ddlSync(ctx, projectID, stmt)
+			}
 		}
 
-		m.logger.Debug("DDL/DML job completed", zap.String("jobID", jobID), zap.Int64("rowsAffected", execResult.RowsAffected))
+		m.logger.Debug("DDL/DML job completed", zap.String("jobID", jobID), zap.Int64("rowsAffected", totalAffected))
 	}
 }
 

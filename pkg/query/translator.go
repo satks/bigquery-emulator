@@ -105,6 +105,33 @@ func NewTranslator() *Translator {
 //  4. Translate DATE_ADD, DATE_SUB, DATE_DIFF, DATE_TRUNC, TIMESTAMP_TRUNC
 //  5. Translate CAST/TRY_CAST type names
 //  6. Translate BQ function calls via FunctionRegistry
+// TranslateMulti converts a BigQuery SQL string to one or more DuckDB-compatible SQL statements.
+// MERGE statements are decomposed into multiple statements; all others return a single statement.
+func (t *Translator) TranslateMulti(sql string) ([]string, error) {
+	trimmed := strings.TrimSpace(sql)
+	if trimmed == "" {
+		return nil, errors.New("empty SQL string")
+	}
+
+	// Check if this is a MERGE statement — needs special decomposition
+	upper := strings.ToUpper(trimmed)
+	if strings.HasPrefix(upper, "MERGE") || strings.HasPrefix(upper, "-- ") && strings.Contains(upper, "\nMERGE") {
+		// First apply basic translations (backticks, type names, project prefix)
+		translated, err := t.Translate(sql)
+		if err != nil {
+			return nil, err
+		}
+		return TranslateMerge(translated)
+	}
+
+	// Single statement
+	translated, err := t.Translate(sql)
+	if err != nil {
+		return nil, err
+	}
+	return []string{translated}, nil
+}
+
 func (t *Translator) Translate(sql string) (string, error) {
 	if strings.TrimSpace(sql) == "" {
 		return "", errors.New("empty SQL string")

@@ -480,12 +480,13 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Translate BQ SQL to DuckDB SQL
-	translated, err := s.translator.Translate(req.Query)
+	// Translate BQ SQL to DuckDB SQL (may return multiple statements for MERGE)
+	translatedStmts, err := s.translator.TranslateMulti(req.Query)
 	if err != nil {
 		apierror.NewBadRequestError("SQL translation error: " + err.Error()).WriteResponse(w)
 		return
 	}
+	translated := translatedStmts[0] // primary statement for single-stmt paths
 
 	// Classify the SQL to determine execution path
 	classification := query.ClassifySQL(req.Query)
@@ -557,28 +558,32 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(resp)
 	} else {
 		// DDL or DML — use Execute() (no rows returned)
-		execResult, err := s.executor.Execute(r.Context(), translated)
-		if err != nil {
-			apierror.NewInternalError("Statement execution failed: " + err.Error()).WriteResponse(w)
-			return
-		}
+		// MERGE may produce multiple statements — execute all
+		var totalAffected int64
+		for _, stmt := range translatedStmts {
+			execResult, err := s.executor.Execute(r.Context(), stmt)
+			if err != nil {
+				apierror.NewInternalError("Statement execution failed: " + err.Error()).WriteResponse(w)
+				return
+			}
+			totalAffected += execResult.RowsAffected
 
-		// Sync DDL metadata so SQL-created schemas/tables appear in REST API.
-		// Use translated SQL (project prefix stripped, backticks converted).
-		s.syncDDLMetadata(r.Context(), projectID, translated)
+			// Sync DDL metadata so SQL-created schemas/tables appear in REST API.
+			s.syncDDLMetadata(r.Context(), projectID, stmt)
+		}
 
 		// Build response for DDL/DML
 		dmlResult := &query.QueryResult{
 			Schema:      nil,
 			Rows:        nil,
-			TotalRows:   uint64(execResult.RowsAffected),
+			TotalRows:   uint64(totalAffected),
 			JobComplete: true,
 		}
 
 		resp := map[string]interface{}{
 			"kind":        "bigquery#queryResponse",
 			"jobComplete": true,
-			"totalRows":   fmt.Sprintf("%d", execResult.RowsAffected),
+			"totalRows":   fmt.Sprintf("%d", totalAffected),
 			"cacheHit":    false,
 		}
 
