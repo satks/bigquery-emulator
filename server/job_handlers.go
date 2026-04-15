@@ -420,10 +420,17 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.JobComplete {
-		resp["totalRows"] = fmt.Sprintf("%d", result.TotalRows)
+		// For DML (no schema/rows), totalRows is the affected count but we
+		// report 0 data rows to prevent the SDK from pagination-polling.
+		isDML := result.Schema == nil || len(result.Schema) == 0
 
-		// Convert schema
-		if len(result.Schema) > 0 {
+		if isDML {
+			resp["totalRows"] = "0"
+			resp["numDmlAffectedRows"] = fmt.Sprintf("%d", result.TotalRows)
+		} else {
+			resp["totalRows"] = fmt.Sprintf("%d", result.TotalRows)
+
+			// Convert schema
 			fields := make([]map[string]interface{}, len(result.Schema))
 			for i, col := range result.Schema {
 				fields[i] = map[string]interface{}{
@@ -435,16 +442,16 @@ func (s *Server) getQueryResults(w http.ResponseWriter, r *http.Request) {
 			resp["schema"] = map[string]interface{}{
 				"fields": fields,
 			}
-		}
 
-		// Convert rows to BQ format: {"f": [{"v": "value1"}, {"v": "value2"}]}
-		rows := rowsToBQFormat(result.Rows, result.Schema)
-		resp["rows"] = rows
+			// Convert rows to BQ format
+			rows := rowsToBQFormat(result.Rows, result.Schema)
+			resp["rows"] = rows
 
-		// Page token: if there are more rows beyond this page
-		nextIndex := startIndex + len(result.Rows)
-		if uint64(nextIndex) < result.TotalRows {
-			resp["pageToken"] = encodePageToken(nextIndex)
+			// Page token: if there are more data rows beyond this page
+			nextIndex := startIndex + len(result.Rows)
+			if uint64(nextIndex) < result.TotalRows {
+				resp["pageToken"] = encodePageToken(nextIndex)
+			}
 		}
 	}
 
