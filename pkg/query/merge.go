@@ -14,26 +14,24 @@ import (
 // WHEN MATCHED [AND condition] THEN DELETE
 
 var (
-	// mergeHeaderRe extracts: target alias, source, source alias, ON condition
 	mergeHeaderRe = regexp.MustCompile(
 		`(?is)MERGE\s+INTO\s+(\S+)(?:\s+AS\s+(\w+))?\s+` +
 			`USING\s+(\(.+?\)|\S+)(?:\s+AS\s+(\w+))?\s+` +
 			`ON\s+(.+?)(?:\s+WHEN\s)`)
 
-	// whenMatchedUpdateRe extracts SET clause from WHEN MATCHED THEN UPDATE
 	whenMatchedUpdateRe = regexp.MustCompile(
 		`(?is)WHEN\s+MATCHED\s+(?:AND\s+.+?\s+)?THEN\s+UPDATE\s+SET\s+(.+?)(?:\s+WHEN\s|\s*$)`)
 
-	// whenNotMatchedInsertRe extracts column list and values from WHEN NOT MATCHED THEN INSERT
 	whenNotMatchedInsertRe = regexp.MustCompile(
 		`(?is)WHEN\s+NOT\s+MATCHED\s+(?:AND\s+.+?\s+)?THEN\s+INSERT\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)`)
 
-	// whenMatchedDeleteRe detects WHEN MATCHED THEN DELETE
 	whenMatchedDeleteRe = regexp.MustCompile(
 		`(?is)WHEN\s+MATCHED\s+(?:AND\s+.+?\s+)?THEN\s+DELETE`)
 )
 
 // TranslateMerge converts a BigQuery MERGE statement to DuckDB-compatible SQL.
+// Uses UPDATE + INSERT WHERE NOT EXISTS instead of INSERT ON CONFLICT,
+// since BigQuery tables don't have UNIQUE constraints.
 // Returns one or more SQL statements to execute in sequence.
 func TranslateMerge(sql string) ([]string, error) {
 	header := mergeHeaderRe.FindStringSubmatch(sql)
@@ -51,24 +49,47 @@ func TranslateMerge(sql string) ([]string, error) {
 	hasNotMatchedInsert := whenNotMatchedInsertRe.MatchString(sql)
 	hasMatchedDelete := whenMatchedDeleteRe.MatchString(sql)
 
-	// Determine the conflict column from the ON condition.
-	// Common pattern: t.pk = s.pk -> conflict on pk
-	conflictCol := extractConflictColumn(onCondition, targetAlias)
+	// Build source reference for FROM clauses
+	sourceRef := source
+	if sourceAlias != "" {
+		sourceRef = source + " AS " + sourceAlias
+	}
 
 	var stmts []string
 
 	// WHEN MATCHED THEN DELETE
-	if hasMatchedDelete && !hasMatchedUpdate && !hasNotMatchedInsert {
-		// Simple delete-merge: DELETE rows from target that match source
+	if hasMatchedDelete {
 		deleteSQL := fmt.Sprintf(
-			"DELETE FROM %s WHERE %s IN (SELECT %s FROM %s%s)",
-			target, conflictCol, conflictCol, source, aliasClause(sourceAlias))
+			"DELETE FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s)",
+			target, sourceRef, onCondition)
+		if targetAlias != "" {
+			aliasRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(targetAlias) + `\.`)
+			deleteSQL = aliasRe.ReplaceAllString(deleteSQL, target+".")
+		}
 		stmts = append(stmts, deleteSQL)
-		return stmts, nil
 	}
 
-	// WHEN MATCHED THEN UPDATE + WHEN NOT MATCHED THEN INSERT
-	// -> INSERT ... ON CONFLICT DO UPDATE
+	// WHEN MATCHED THEN UPDATE
+	if hasMatchedUpdate {
+		updateMatch := whenMatchedUpdateRe.FindStringSubmatch(sql)
+		if updateMatch == nil {
+			return nil, fmt.Errorf("cannot parse WHEN MATCHED UPDATE clause")
+		}
+		setClause := strings.TrimSpace(updateMatch[1])
+
+		// UPDATE target SET ... FROM source WHERE on_condition
+		updateSQL := fmt.Sprintf(
+			"UPDATE %s SET %s FROM %s WHERE %s",
+			target, setClause, sourceRef, onCondition)
+		// Replace target alias with table name using word boundary
+		if targetAlias != "" {
+			aliasRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(targetAlias) + `\.`)
+			updateSQL = aliasRe.ReplaceAllString(updateSQL, target+".")
+		}
+		stmts = append(stmts, updateSQL)
+	}
+
+	// WHEN NOT MATCHED THEN INSERT
 	if hasNotMatchedInsert {
 		insertMatch := whenNotMatchedInsertRe.FindStringSubmatch(sql)
 		if insertMatch == nil {
@@ -77,104 +98,24 @@ func TranslateMerge(sql string) ([]string, error) {
 		insertCols := strings.TrimSpace(insertMatch[1])
 		insertVals := strings.TrimSpace(insertMatch[2])
 
-		// Build the source subquery
-		sourceQuery := source
-		if sourceAlias != "" {
-			sourceQuery = source + " AS " + sourceAlias
-		}
-
-		if hasMatchedUpdate {
-			updateMatch := whenMatchedUpdateRe.FindStringSubmatch(sql)
-			if updateMatch == nil {
-				return nil, fmt.Errorf("cannot parse WHEN MATCHED UPDATE clause")
-			}
-			setClause := strings.TrimSpace(updateMatch[1])
-
-			// Convert SET clause: replace source alias references with EXCLUDED
-			setClause = replaceAliasWithExcluded(setClause, sourceAlias)
-
-			// INSERT INTO target (cols) SELECT vals FROM source ON CONFLICT (pk) DO UPDATE SET ...
-			upsertSQL := fmt.Sprintf(
-				"INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT (%s) DO UPDATE SET %s",
-				target, insertCols, insertVals, sourceQuery, conflictCol, setClause)
-			stmts = append(stmts, upsertSQL)
-		} else {
-			// INSERT-only merge (WHEN NOT MATCHED only)
-			insertSQL := fmt.Sprintf(
-				"INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT (%s) DO NOTHING",
-				target, insertCols, insertVals, sourceQuery, conflictCol)
-			stmts = append(stmts, insertSQL)
-		}
-		return stmts, nil
-	}
-
-	// WHEN MATCHED THEN UPDATE only (no insert)
-	if hasMatchedUpdate {
-		updateMatch := whenMatchedUpdateRe.FindStringSubmatch(sql)
-		if updateMatch == nil {
-			return nil, fmt.Errorf("cannot parse WHEN MATCHED UPDATE clause")
-		}
-		setClause := strings.TrimSpace(updateMatch[1])
-
-		sourceQuery := source
-		if sourceAlias != "" {
-			sourceQuery = source + " AS " + sourceAlias
-		}
-
-		// UPDATE target SET ... FROM source WHERE condition
-		updateSQL := fmt.Sprintf(
-			"UPDATE %s SET %s FROM %s WHERE %s",
-			target, setClause, sourceQuery, onCondition)
-
-		// Replace target alias with table name in the update
+		// Build the NOT EXISTS condition by swapping alias references in onCondition
+		notExistsCondition := onCondition
 		if targetAlias != "" {
-			updateSQL = strings.ReplaceAll(updateSQL, targetAlias+".", target+".")
+			aliasRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(targetAlias) + `\.`)
+			notExistsCondition = aliasRe.ReplaceAllString(notExistsCondition, target+".")
 		}
 
-		stmts = append(stmts, updateSQL)
-		return stmts, nil
+		// INSERT INTO target (cols) SELECT vals FROM source
+		// WHERE NOT EXISTS (SELECT 1 FROM target WHERE target.pk = source.pk)
+		insertSQL := fmt.Sprintf(
+			"INSERT INTO %s (%s) SELECT %s FROM %s WHERE NOT EXISTS (SELECT 1 FROM %s WHERE %s)",
+			target, insertCols, insertVals, sourceRef, target, notExistsCondition)
+		stmts = append(stmts, insertSQL)
 	}
 
-	return nil, fmt.Errorf("unsupported MERGE pattern")
-}
-
-// extractConflictColumn extracts the column name from an ON condition like "t.pk = s.pk"
-func extractConflictColumn(onCondition, targetAlias string) string {
-	// Try to extract from pattern: alias.column = ...
-	parts := strings.SplitN(onCondition, "=", 2)
-	if len(parts) != 2 {
-		return "id" // fallback
+	if len(stmts) == 0 {
+		return nil, fmt.Errorf("unsupported MERGE pattern: no WHEN clauses found")
 	}
 
-	leftSide := strings.TrimSpace(parts[0])
-	// Strip alias prefix
-	if targetAlias != "" && strings.HasPrefix(leftSide, targetAlias+".") {
-		return strings.TrimPrefix(leftSide, targetAlias+".")
-	}
-
-	// Try to extract column from dotted name
-	dotParts := strings.SplitN(leftSide, ".", 2)
-	if len(dotParts) == 2 {
-		return dotParts[1]
-	}
-
-	return leftSide
-}
-
-// replaceAliasWithExcluded replaces source alias references (s.col) with EXCLUDED.col
-// in a SET clause, which is what DuckDB's ON CONFLICT expects.
-func replaceAliasWithExcluded(setClause, sourceAlias string) string {
-	if sourceAlias == "" {
-		return setClause
-	}
-	// Replace s.col with EXCLUDED.col
-	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(sourceAlias) + `\.(\w+)`)
-	return re.ReplaceAllString(setClause, "EXCLUDED.$1")
-}
-
-func aliasClause(alias string) string {
-	if alias == "" {
-		return ""
-	}
-	return " AS " + alias
+	return stmts, nil
 }
