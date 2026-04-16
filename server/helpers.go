@@ -10,12 +10,41 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sathish/bigquery-emulator/server/apierror"
 )
 
 // isNotFoundError checks if an error indicates a resource was not found.
 // The repository layer returns errors containing "not found" for missing resources.
 func isNotFoundError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not found")
+}
+
+// classifyAndWriteError inspects a DuckDB execution error and returns the
+// appropriate HTTP status. DuckDB "does not exist" errors -> 404 (non-retryable).
+// Other errors -> 400 for syntax/binder errors, 500 for everything else.
+func classifyAndWriteError(w http.ResponseWriter, err error) {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+
+	// Table/schema/catalog not found -> 404
+	if strings.Contains(lower, "does not exist") ||
+		strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "could not find") {
+		apierror.NewNotFoundError("Resource", msg).WriteResponse(w)
+		return
+	}
+
+	// Syntax/binder errors -> 400
+	if strings.Contains(lower, "parser error") ||
+		strings.Contains(lower, "binder error") ||
+		strings.Contains(lower, "syntax error") {
+		apierror.NewBadRequestError(msg).WriteResponse(w)
+		return
+	}
+
+	// Everything else -> 500
+	apierror.NewInternalError(msg).WriteResponse(w)
 }
 
 // isAlreadyExistsError checks if an error indicates a resource already exists.

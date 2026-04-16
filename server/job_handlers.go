@@ -507,7 +507,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		// SELECT — use Query() to get rows back
 		result, err := s.executor.Query(r.Context(), translated)
 		if err != nil {
-			apierror.NewInternalError("Query failed: " + err.Error()).WriteResponse(w)
+			classifyAndWriteError(w, err)
 			return
 		}
 
@@ -570,7 +570,7 @@ func (s *Server) queriesInsert(w http.ResponseWriter, r *http.Request) {
 		for _, stmt := range translatedStmts {
 			execResult, err := s.executor.Execute(r.Context(), stmt)
 			if err != nil {
-				apierror.NewInternalError("Statement execution failed: " + err.Error()).WriteResponse(w)
+				classifyAndWriteError(w, err)
 				return
 			}
 			totalAffected += execResult.RowsAffected
