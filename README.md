@@ -1,201 +1,139 @@
 # BigQuery Emulator (DuckDB Backend)
 
-A high-performance local BigQuery emulator powered by DuckDB.
+A high-performance local BigQuery emulator powered by DuckDB. Drop-in replacement for Google Cloud BigQuery during development and testing.
 
 ## Features
 
-- Full BigQuery REST API v2 compatibility (datasets, tables, jobs, tabledata)
-- DuckDB-powered SQL execution (columnar OLAP engine)
-- BigQuery SQL to DuckDB SQL translation (functions, types, syntax)
-- Apache Arrow-based Storage API for high-throughput reads/writes
-- Complete permission system (IAM roles, dataset ACLs, row-level security, column masking)
-- In-memory or file-backed persistent storage
-- Multi-stage Docker build for minimal image size
+- **Full BigQuery REST API v2** — datasets, tables, jobs, tabledata, projects
+- **DuckDB-powered SQL execution** — columnar OLAP engine with native ARRAY/STRUCT support
+- **SQL translation** — BigQuery SQL to DuckDB SQL (20+ function mappings, type translation, MERGE support)
+- **Go + Node.js SDK compatible** — tested against both `cloud.google.com/go/bigquery` and `@google-cloud/bigquery`
+- **MERGE INTO support** — translated to UPDATE + INSERT WHERE NOT EXISTS (no UNIQUE constraint required)
+- **Apache Arrow Storage API** — read/write streams with Arrow IPC format
+- **Permission system** — IAM roles, dataset ACLs, row-level security, column masking (bypass mode default)
+- **Proper error codes** — 404 for non-existent resources (non-retryable), 400 for syntax errors
+- **Type-aware serialization** — TIMESTAMP as epoch microseconds, DATE/TIME/DATETIME as civil strings, BYTES as base64
+- **Multi-platform Docker** — ARM64 + AMD64 support
 
 ## Quick Start
 
-### Using Go
-
 ```bash
-# Build
-make build
-
-# Run
+# Build and run
+go build -o bigquery-emulator ./cmd/bigquery-emulator/
 ./bigquery-emulator --project=test-project --port=9050
 ```
 
-### Using Docker
-
-```bash
-# Build the image
-docker build -t bigquery-emulator .
-
-# Run
-docker run -p 9050:9050 bigquery-emulator --project=test-project --port=9050
-```
-
-### Client SDK Configuration
-
-Point your BigQuery client SDK to the emulator:
-
-```bash
-export BIGQUERY_EMULATOR_HOST=localhost:9050
-```
+### Go SDK
 
 ```go
-// Go client example
-import "cloud.google.com/go/bigquery"
-
 client, _ := bigquery.NewClient(ctx, "test-project",
     option.WithEndpoint("http://localhost:9050"),
     option.WithoutAuthentication(),
 )
 ```
 
-### Environment Variables
+### Node.js SDK
 
-| Variable | Description |
+```javascript
+const bigquery = new BigQuery({projectId: 'test-project'});
+// Set env: BIGQUERY_EMULATOR_HOST=http://localhost:9050
+// Patch gtoken for auth: GOOGLE_TOKEN_URL=http://localhost:9050/token
+```
+
+### Docker
+
+```bash
+docker build -t bigquery-emulator .
+docker run -p 9050:9050 bigquery-emulator --project=test-project
+```
+
+## SQL Translation
+
+The emulator translates BigQuery SQL to DuckDB SQL automatically:
+
+| BigQuery | DuckDB |
 |---|---|
-| `BIGQUERY_EMULATOR_HOST` | Set by client SDKs to point to the emulator (e.g., `localhost:9050`) |
-| `BIGQUERY_EMULATOR_PROJECT` | Default project ID (alternative to `--project` flag) |
+| `` `project`.dataset.table `` | `dataset.table` (project stripped) |
+| `ARRAY<STRING>` | `VARCHAR[]` |
+| `INT64`, `FLOAT64`, `STRING`, `BOOL` | `BIGINT`, `DOUBLE`, `VARCHAR`, `BOOLEAN` |
+| `IFNULL(a, b)` | `COALESCE(a, b)` |
+| `SAFE_CAST(x AS INT64)` | `TRY_CAST(x AS BIGINT)` |
+| `DATE_ADD(d, INTERVAL 1 DAY)` | `(d) + INTERVAL 1 DAY` |
+| `TIMESTAMP('2024-01-01')` | `TIMESTAMPTZ '2024-01-01'` |
+| `MERGE INTO ... USING ... ON ...` | `UPDATE ... FROM ... WHERE ...` + `INSERT ... WHERE NOT EXISTS` |
+| `CREATE TABLE t (x INT64)` | `CREATE TABLE t (x BIGINT)` |
+| `OPTIONS(description='...')` | stripped (stored as metadata) |
 
 ## API Endpoints
 
-All endpoints are under `/bigquery/v2/projects/{projectId}`.
+Routes are served at both `/bigquery/v2/projects/{projectId}/...` and `/projects/{projectId}/...` (Node.js SDK compatibility).
 
-### Datasets
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/datasets` | List datasets |
-| `POST` | `/datasets` | Create dataset |
-| `GET` | `/datasets/{datasetId}` | Get dataset |
-| `PATCH` | `/datasets/{datasetId}` | Update dataset |
-| `DELETE` | `/datasets/{datasetId}` | Delete dataset |
-
-### Tables
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/datasets/{datasetId}/tables` | List tables |
-| `POST` | `/datasets/{datasetId}/tables` | Create table |
-| `GET` | `/datasets/{datasetId}/tables/{tableId}` | Get table |
-| `PATCH` | `/datasets/{datasetId}/tables/{tableId}` | Update table |
-| `DELETE` | `/datasets/{datasetId}/tables/{tableId}` | Delete table |
-
-### Table Data
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/datasets/{datasetId}/tables/{tableId}/data` | List table data (with pagination) |
-| `POST` | `/datasets/{datasetId}/tables/{tableId}/insertAll` | Streaming insert |
-
-### Jobs
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/jobs` | List jobs |
-| `POST` | `/jobs` | Submit job (query, load) |
-| `GET` | `/jobs/{jobId}` | Get job status |
-| `POST` | `/jobs/{jobId}/cancel` | Cancel job |
-| `GET` | `/queries/{jobId}` | Get query results (with pagination) |
-
-### Storage API
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/v1/projects/{project}/datasets/{dataset}/tables/{table}/readSessions` | Create read session |
-| `GET` | `/v1/readStreams/{streamName}:readRows` | Read rows (Arrow IPC) |
-| `POST` | `/v1/projects/{project}/datasets/{dataset}/tables/{table}/writeStreams` | Create write stream |
-| `POST` | `/v1/writeStreams/{streamName}:appendRows` | Append rows |
-
-### Health
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
+| Category | Endpoints |
+|---|---|
+| **Projects** | `GET /projects`, `GET /projects/{id}` |
+| **Datasets** | `GET/POST /datasets`, `GET/PATCH/DELETE /datasets/{id}` |
+| **Tables** | `GET/POST /datasets/{ds}/tables`, `GET/PATCH/DELETE /datasets/{ds}/tables/{id}` |
+| **Table Data** | `GET /tables/{id}/data`, `POST /tables/{id}/insertAll` |
+| **Jobs** | `GET/POST /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel` |
+| **Queries** | `POST /queries` (sync), `GET /queries/{jobId}` (poll results) |
+| **Storage** | `POST .../readSessions`, `GET /readStreams/{id}:readRows`, `POST .../writeStreams`, `POST /writeStreams/{id}:appendRows` |
+| **Auth** | `POST /token`, `POST /oauth2/v4/token` (mock OAuth) |
+| **Health** | `GET /health` |
 
 ## Configuration
-
-### CLI Flags
 
 | Flag | Default | Description |
 |---|---|---|
 | `--project` | (required) | Google Cloud project ID |
 | `--port` | `9050` | HTTP server port |
-| `--grpc-port` | `9060` | gRPC server port |
-| `--database` | `:memory:` | DuckDB database path (`:memory:` for in-memory) |
-| `--log-level` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
-| `--version` | | Show version and exit |
+| `--grpc-port` | `9060` | gRPC server port (reserved) |
+| `--database` | `:memory:` | DuckDB path (`:memory:` or file) |
+| `--log-level` | `info` | Log level |
+
+| Environment Variable | Description |
+|---|---|
+| `BIGQUERY_EMULATOR_HOST` | SDK auto-discovery (e.g., `localhost:9050`) |
+| `BIGQUERY_EMULATOR_PROJECT` | Alternative to `--project` flag |
 
 ## Development
 
-### Prerequisites
-
-- Go 1.24+
-- CGO enabled (required for DuckDB driver)
-- golangci-lint (for linting)
-
-### Make Commands
-
 ```bash
-make build       # Build the binary
-make test        # Run all tests
+make build       # Build binary
 make test-race   # Run tests with race detector
 make bench       # Run benchmarks
-make lint        # Run golangci-lint
-make coverage    # Generate HTML coverage report
-make clean       # Remove build artifacts
+make lint        # golangci-lint
 make docker      # Build Docker image
-make run         # Build and run locally
 ```
 
 ### Project Structure
 
 ```
-cmd/bigquery-emulator/   # CLI entrypoint
+cmd/bigquery-emulator/   CLI entrypoint
 pkg/
-  connection/            # DuckDB connection manager (RWMutex for concurrent reads)
-  metadata/              # Metadata models and repository (stored in DuckDB)
-  query/                 # SQL classifier, translator (BQ -> DuckDB), executor
-  types/                 # Type mapping (BQ <-> DuckDB <-> Arrow)
-  permission/            # IAM roles, ACLs, row-level security, column masking
-  job/                   # Async job manager
-server/                  # HTTP handlers, router, middleware
-  apierror/              # BigQuery-compatible error responses
-  storage/               # Storage API (Arrow IPC read/write)
+  connection/            DuckDB connection manager (sync.RWMutex)
+  query/                 SQL classifier, translator, executor, MERGE decomposition
+  types/                 BQ <-> DuckDB <-> Arrow type mapping
+  metadata/              Models + repository (stored in DuckDB _bq_* tables)
+  permission/            IAM roles, ACLs, RLS, column masking
+  job/                   Async job manager with result pagination
+server/
+  handlers               Dataset/table/job/tabledata/project HTTP handlers
+  storage/               Arrow IPC Storage API
+  apierror/              BQ-compatible error responses
+  ddl_sync.go            Auto-register SQL-created schemas/tables in metadata
+  helpers.go             Type-aware value formatting, error classification
+tests/
+  integration/           End-to-end HTTP tests
+  sdk/                   Go + Node.js SDK compatibility tests
+  benchmark/             Performance benchmarks
 ```
 
-### Running Tests
+## Documentation
 
-```bash
-# All tests
-go test ./...
-
-# With race detector (recommended for CI)
-go test -race -count=1 ./...
-
-# Specific package
-go test ./pkg/query/...
-
-# With verbose output
-go test -v ./server/...
-```
-
-## Architecture
-
-The emulator maps BigQuery concepts to DuckDB:
-
-| BigQuery | DuckDB |
-|---|---|
-| Project | Catalog / ATTACH |
-| Dataset | Schema |
-| Table | Table |
-
-SQL translation converts BigQuery-specific functions and syntax to DuckDB equivalents at the string/regex level, with an interface designed for future AST-level translation.
-
-The permission system uses a pluggable noop/bypass pattern (default: bypass ON) for zero overhead in development, with full IAM role checking, dataset ACLs, row-level security (SQL subquery injection), and column masking (SQL expression rewrite) when enabled.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — system layers, data flow, component details
+- [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) — key technical decisions with rationale
+- [SPEC.md](SPEC.md) — original DuckDB backend specification
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+[MIT](LICENSE)
