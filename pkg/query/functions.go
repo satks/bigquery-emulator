@@ -30,6 +30,7 @@ func NewFunctionRegistry() *FunctionRegistry {
 
 	// Simple renames: BQ function name -> DuckDB function name
 	simpleRenames := map[string]string{
+		"COUNTIF":         "count_if",
 		"IFNULL":          "COALESCE",
 		"ARRAY_AGG":       "list",
 		"ARRAY_LENGTH":    "len",

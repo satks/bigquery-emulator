@@ -45,6 +45,24 @@ func NewManager(dsn string, logger *zap.Logger) (*Manager, error) {
 		}
 	}
 
+	// Register BQ-compatibility macros. Macros live in the database catalog,
+	// so registering once covers all pooled connections.
+	// farm_fingerprint: values do NOT match real FarmHash64 — DuckDB's hash()
+	// is used instead. Stability and distribution hold, which is what
+	// deterministic bucketing (MOD(ABS(FARM_FINGERPRINT(x)), N)) relies on.
+	// The CASE guard matches BQ's NULL-in/NULL-out behavior. hash() returns
+	// UBIGINT and CAST raises on overflow instead of wrapping, so values
+	// above 2^63-1 are wrapped to negative via HUGEINT arithmetic
+	// (two's complement), matching BQ's signed INT64 output domain.
+	const farmFingerprintMacro = `CREATE OR REPLACE MACRO farm_fingerprint(s) AS
+		CASE WHEN s IS NULL THEN NULL ELSE CAST(
+			CAST(hash(s) AS HUGEINT) -
+			CASE WHEN hash(s) > 9223372036854775807 THEN 18446744073709551616 ELSE 0 END
+		AS BIGINT) END`
+	if _, err := m.Exec(ctx, farmFingerprintMacro); err != nil {
+		logger.Warn("failed to register farm_fingerprint macro", zap.Error(err))
+	}
+
 	logger.Info("DuckDB connection manager initialized", zap.String("dsn", dsn))
 	return m, nil
 }

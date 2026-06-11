@@ -372,3 +372,38 @@ func BenchmarkManager_Exec(b *testing.B) {
 		}
 	}
 }
+
+func TestManager_FarmFingerprintMacro(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	// Deterministic: same input twice yields the same signed BIGINT.
+	var a, b int64
+	if err := m.QueryRow(ctx, "SELECT farm_fingerprint('abc')").Scan(&a); err != nil {
+		t.Fatalf("farm_fingerprint('abc') error: %v", err)
+	}
+	if err := m.QueryRow(ctx, "SELECT farm_fingerprint('abc')").Scan(&b); err != nil {
+		t.Fatalf("farm_fingerprint('abc') second call error: %v", err)
+	}
+	if a != b {
+		t.Errorf("farm_fingerprint not deterministic: %d != %d", a, b)
+	}
+
+	// Usable for bucketing: MOD(ABS(...), N) in [0, N).
+	var bucket int64
+	if err := m.QueryRow(ctx, "SELECT MOD(ABS(farm_fingerprint('abc')), 100)").Scan(&bucket); err != nil {
+		t.Fatalf("MOD(ABS(farm_fingerprint)) error: %v", err)
+	}
+	if bucket < 0 || bucket >= 100 {
+		t.Errorf("bucket out of range: %d", bucket)
+	}
+
+	// NULL in, NULL out (matches BigQuery).
+	var nullResult sql.NullInt64
+	if err := m.QueryRow(ctx, "SELECT farm_fingerprint(NULL)").Scan(&nullResult); err != nil {
+		t.Fatalf("farm_fingerprint(NULL) error: %v", err)
+	}
+	if nullResult.Valid {
+		t.Errorf("farm_fingerprint(NULL) = %d, want NULL", nullResult.Int64)
+	}
+}

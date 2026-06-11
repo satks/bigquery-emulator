@@ -677,3 +677,15 @@ func TestTranslator_Translate_HyphenArithmeticUntouched(t *testing.T) {
 		}
 	}
 }
+
+func TestTranslator_Translate_COUNTIF(t *testing.T) {
+	tr := NewTranslator()
+	result, err := tr.Translate("SELECT COUNTIF(x > 1) FROM t")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	expected := "SELECT count_if(x > 1) FROM t"
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
+}

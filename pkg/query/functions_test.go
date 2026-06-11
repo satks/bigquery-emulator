@@ -246,3 +246,15 @@ func TestFunctionRegistry_Get_CaseInsensitive(t *testing.T) {
 		})
 	}
 }
+
+func TestFunctionRegistry_Get_CountIf(t *testing.T) {
+	r := NewFunctionRegistry()
+
+	tr, ok := r.Get("COUNTIF")
+	if !ok {
+		t.Fatal("COUNTIF not found in registry")
+	}
+	if tr.DuckDBName != "count_if" {
+		t.Errorf("expected DuckDBName=count_if, got %q", tr.DuckDBName)
+	}
+}
