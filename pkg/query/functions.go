@@ -149,6 +149,23 @@ func NewFunctionRegistry() *FunctionRegistry {
 		},
 	}
 
+	// MD5/SHA1/SHA256: BQ returns BYTES; DuckDB's functions return hex
+	// VARCHAR. Wrap with unhex() so the result is a BLOB — JSON encoding
+	// then yields base64 like BQ, and TO_BASE64 binds. SHA512 is not in
+	// DuckDB core and stays unmapped.
+	for bq, duck := range map[string]string{
+		"MD5":    "md5",
+		"SHA1":   "sha1",
+		"SHA256": "sha256",
+	} {
+		duckName := duck
+		r.functions[bq] = FunctionTranslation{
+			Handler: func(args string) string {
+				return fmt.Sprintf("unhex(%s(%s))", duckName, strings.TrimSpace(args))
+			},
+		}
+	}
+
 	// STRUCT(e1 AS n1, e2 AS n2) -> {'n1': e1, 'n2': e2}
 	// DuckDB doesn't allow AS inside function args; rewrite to a struct literal.
 	r.functions["STRUCT"] = FunctionTranslation{

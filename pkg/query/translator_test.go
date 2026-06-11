@@ -776,3 +776,33 @@ func TestTranslator_Translate_StructConstructor(t *testing.T) {
 		})
 	}
 }
+
+func TestTranslator_Translate_HashFunctionsReturnBytes(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"md5", "SELECT MD5('abc')", "SELECT unhex(md5('abc'))"},
+		{"sha1", "SELECT SHA1(col) FROM t", "SELECT unhex(sha1(col)) FROM t"},
+		{"sha256", "SELECT SHA256(col) FROM t", "SELECT unhex(sha256(col)) FROM t"},
+		{"nested md5", "SELECT MD5(MD5('x'))", "SELECT unhex(md5(unhex(md5('x'))))"},
+		{
+			"to_base64 over md5",
+			"SELECT TO_BASE64(MD5('abc'))",
+			"SELECT TO_BASE64(unhex(md5('abc')))",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}

@@ -506,3 +506,25 @@ func BenchmarkExecutor_Query_Table(b *testing.B) {
 		}
 	}
 }
+
+func TestExecutor_Query_MD5ReturnsBytes(t *testing.T) {
+	ex, cleanup := newTestExecutor(t)
+	defer cleanup()
+	tr := NewTranslator()
+	sql, err := tr.Translate("SELECT TO_BASE64(MD5('abc')) AS h")
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+	result, err := ex.Query(context.Background(), sql)
+	if err != nil {
+		t.Fatalf("query error: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(result.Rows))
+	}
+	got := result.Rows[0][0]
+	// Matches real BigQuery: TO_BASE64(MD5('abc')) = kAFQmDzST7DWlj99KOF/cg==
+	if got != "kAFQmDzST7DWlj99KOF/cg==" {
+		t.Errorf("got %v, want kAFQmDzST7DWlj99KOF/cg==", got)
+	}
+}
