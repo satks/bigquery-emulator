@@ -167,6 +167,12 @@ func (t *Translator) Translate(sql string) (string, error) {
 	// separately backtick-quoted: `project-id`.dataset.table
 	result = stripProjectPrefix(result)
 
+	// 1c. Unquoted hyphenated project IDs in table paths:
+	// FROM test-project.dataset.table -> FROM "dataset"."table"
+	// BigQuery accepts these without backticks; DuckDB would parse the
+	// hyphen as subtraction.
+	result = RewriteHyphenatedTablePaths(result)
+
 	// 2. Strip OPTIONS(...) from DDL
 	result = optionsRe.ReplaceAllString(result, "")
 
@@ -366,6 +372,39 @@ func findMatchingParen(s string, openIdx int) int {
 		}
 	}
 	return -1
+}
+
+// unquotedProjectRe matches an unquoted hyphenated project ID in table-path
+// position: a table-introducing keyword followed by name-with-dashes.dataset
+// or name-with-dashes.dataset.table. BigQuery legally accepts unquoted
+// dash-containing project IDs in table paths; DuckDB would parse the dash as
+// subtraction. Anchoring on the keyword keeps arithmetic (a - b) untouched,
+// since an expression can never directly follow these keywords.
+//
+// Known limitation: a non-first table in a comma-separated FROM list
+// (FROM a, test-project.d.t) is not keyword-anchored and is not rewritten.
+var unquotedProjectRe = regexp.MustCompile(
+	`(?i)\b(FROM|JOIN|INTO|UPDATE|TABLE|SCHEMA|EXISTS|INSERT)\s+` +
+		`[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+` + // project id with >=1 hyphen
+		`\.([A-Za-z_][A-Za-z0-9_]*)((?:\.[A-Za-z_][A-Za-z0-9_]*)?)`)
+
+// RewriteHyphenatedTablePaths rewrites unquoted hyphenated-project table paths
+// to double-quoted dataset.table form, dropping the project segment (dataset
+// names cannot contain hyphens, so a hyphenated first segment is always a
+// project ID). Exported for use by DDL metadata sync, which parses original SQL.
+func RewriteHyphenatedTablePaths(sql string) string {
+	return unquotedProjectRe.ReplaceAllStringFunc(sql, func(match string) string {
+		m := unquotedProjectRe.FindStringSubmatch(match)
+		if m == nil {
+			return match
+		}
+		keyword, dataset, table := m[1], m[2], m[3]
+		out := keyword + ` "` + dataset + `"`
+		if table != "" {
+			out += `."` + strings.TrimPrefix(table, ".") + `"`
+		}
+		return out
+	})
 }
 
 // projectQualifiedRe matches a double-quoted project prefix (containing a hyphen)

@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sathish/bigquery-emulator/pkg/query"
+)
 
 func TestMatchCreateSchema(t *testing.T) {
 	tests := []struct {
@@ -368,5 +372,41 @@ func TestDDLSync_CreateTable_HasSchema(t *testing.T) {
 	}
 	if fields[2].Name != "age" || fields[2].Type != "INTEGER" {
 		t.Errorf("field 2: got %s/%s, want age/INTEGER", fields[2].Name, fields[2].Type)
+	}
+}
+
+// TestDDLSync_HyphenatedProjectNormalization verifies that unquoted hyphenated
+// project prefixes are stripped before DDL matching, so the dataset/table names
+// are extracted correctly (not "test" from "test-project").
+func TestDDLSync_HyphenatedProjectNormalization(t *testing.T) {
+	tests := []struct {
+		name       string
+		sql        string
+		matchFn    func(string) []string
+		wantFirst  string
+		wantSecond string
+	}{
+		{"create schema", "CREATE SCHEMA test-project.gap_test", matchCreateSchema, "gap_test", ""},
+		{"create schema if not exists", "CREATE SCHEMA IF NOT EXISTS test-project.gap_test", matchCreateSchema, "gap_test", ""},
+		{"drop schema", "DROP SCHEMA IF EXISTS test-project.gap_test", matchDropSchema, "gap_test", ""},
+		{"create table", "CREATE TABLE test-project.gap_test.t1 (a BIGINT)", matchCreateTable, "gap_test", "t1"},
+		{"drop table", "DROP TABLE IF EXISTS test-project.gap_test.t1", matchDropTable, "gap_test", "t1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := query.RewriteHyphenatedTablePaths(tc.sql)
+			m := tc.matchFn(normalized)
+			if len(m) < 2 {
+				t.Fatalf("no match for %q (normalized %q)", tc.sql, normalized)
+			}
+			if got := unquote(m[1]); got != tc.wantFirst {
+				t.Errorf("first ident = %q, want %q", got, tc.wantFirst)
+			}
+			if tc.wantSecond != "" {
+				if len(m) < 3 || unquote(m[2]) != tc.wantSecond {
+					t.Errorf("second ident = %v, want %q", m[2:], tc.wantSecond)
+				}
+			}
+		})
 	}
 }

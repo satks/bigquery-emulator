@@ -593,3 +593,87 @@ func TestTranslator_Translate_NestedSameFunction(t *testing.T) {
 		t.Errorf("got %q, want %q", result, expected)
 	}
 }
+
+func TestTranslator_Translate_UnquotedHyphenatedProject(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"select 3-part",
+			"SELECT * FROM test-project.gap_test.t1",
+			`SELECT * FROM "gap_test"."t1"`,
+		},
+		{
+			"join",
+			"SELECT * FROM a.b JOIN test-project.d.t2 ON a.b.id = t2.id",
+			`SELECT * FROM a.b JOIN "d"."t2" ON a.b.id = t2.id`,
+		},
+		{
+			"insert into",
+			"INSERT INTO test-project.d.t VALUES (1)",
+			`INSERT INTO "d"."t" VALUES (1)`,
+		},
+		{
+			"update",
+			"UPDATE test-project.d.t SET x = 1 WHERE y = 2",
+			`UPDATE "d"."t" SET x = 1 WHERE y = 2`,
+		},
+		{
+			"delete from",
+			"DELETE FROM test-project.d.t WHERE x = 1",
+			`DELETE FROM "d"."t" WHERE x = 1`,
+		},
+		{
+			"create table",
+			"CREATE TABLE test-project.d.t (a BIGINT)",
+			`CREATE TABLE "d"."t" (a BIGINT)`,
+		},
+		{
+			"drop table if exists",
+			"DROP TABLE IF EXISTS test-project.d.t",
+			`DROP TABLE IF EXISTS "d"."t"`,
+		},
+		{
+			"create schema 2-part",
+			"CREATE SCHEMA test-project.gap_test",
+			`CREATE SCHEMA "gap_test"`,
+		},
+		{
+			"multi-hyphen project",
+			"SELECT * FROM my-proj-2.d.t",
+			`SELECT * FROM "d"."t"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTranslator_Translate_HyphenArithmeticUntouched(t *testing.T) {
+	tr := NewTranslator()
+	cases := []string{
+		"SELECT a - b FROM t",
+		"SELECT price-tax FROM t",
+		"SELECT x FROM t WHERE a-b > 0",
+	}
+	for _, input := range cases {
+		result, err := tr.Translate(input)
+		if err != nil {
+			t.Fatalf("error = %v", err)
+		}
+		if result != input {
+			t.Errorf("arithmetic rewritten: got %q, want %q", result, input)
+		}
+	}
+}

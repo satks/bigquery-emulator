@@ -64,13 +64,17 @@ func matchDropTable(sql string) []string {
 // syncDDLMetadata detects DDL in the original SQL and syncs metadata.
 // This ensures datasets/tables created via SQL are visible through the REST API.
 func (s *Server) syncDDLMetadata(ctx context.Context, projectID, originalSQL string) {
-	classification := query.ClassifySQL(originalSQL)
+	// Normalize unquoted hyphenated project prefixes first
+	// (CREATE SCHEMA test-project.ds), otherwise identPattern would
+	// capture "test" as the identifier.
+	normalizedSQL := query.RewriteHyphenatedTablePaths(originalSQL)
+	classification := query.ClassifySQL(normalizedSQL)
 
 	switch classification.Type {
 	case query.StatementDDLCreate:
-		s.syncCreateDDL(ctx, projectID, originalSQL)
+		s.syncCreateDDL(ctx, projectID, normalizedSQL)
 	case query.StatementDDLDrop:
-		s.syncDropDDL(ctx, projectID, originalSQL)
+		s.syncDropDDL(ctx, projectID, normalizedSQL)
 	}
 }
 
