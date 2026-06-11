@@ -1087,3 +1087,96 @@ func TestIntegration_GenerateUUID_StringRoundtrip(t *testing.T) {
 		t.Fatalf("lookup by ss_id literal failed: %v", rows)
 	}
 }
+
+// TestIntegration_Round2GapRepros executes the round-2 SIGNALSMITH_GAPS.md
+// shapes (#8-#12) through the full HTTP stack.
+func TestIntegration_Round2GapRepros(t *testing.T) {
+	ts, cleanup := setupIntegrationServer(t)
+	defer cleanup()
+
+	// Gap #9: TIMESTAMP_ADD in the journey time-delay shape.
+	t.Run("timestamp_add", func(t *testing.T) {
+		rows := queryRowValues(t, runQuery(t, ts,
+			"SELECT TIMESTAMP_ADD(TIMESTAMP '2020-01-01 00:00:00+00', INTERVAL 5 MINUTE) <= CURRENT_TIMESTAMP()"))
+		if len(rows) != 1 || rows[0][0] != "true" {
+			t.Fatalf("expected [true], got %v", rows)
+		}
+	})
+
+	// Gap #10: IGNORE NULLS + ORDER BY inside ARRAY_AGG (trait shape).
+	t.Run("array_agg_ignore_nulls", func(t *testing.T) {
+		body := runQuery(t, ts,
+			"SELECT ARRAY_AGG(STRUCT(o AS v) IGNORE NULLS ORDER BY o) FROM (SELECT 1 AS o UNION ALL SELECT 2)")
+		if rawRows, _ := body["rows"].([]interface{}); len(rawRows) != 1 {
+			t.Fatalf("expected 1 row, got %v", body["rows"])
+		}
+	})
+
+	// Gap #11: UNNEST element alias in the audience-filter EXISTS shape.
+	t.Run("unnest_element_alias", func(t *testing.T) {
+		rows := queryRowValues(t, runQuery(t, ts,
+			"SELECT x FROM (SELECT ['vip','new'] AS tags, 1 AS x) parent "+
+				"WHERE EXISTS(SELECT 1 FROM UNNEST(parent.tags) AS _el WHERE _el = 'vip')"))
+		if len(rows) != 1 || rows[0][0] != "1" {
+			t.Fatalf("expected [1], got %v", rows)
+		}
+	})
+
+	// Gap #12: JSON column values come back as JSON text, not Go map fmt.
+	t.Run("json_column_text", func(t *testing.T) {
+		runQuery(t, ts, "CREATE SCHEMA IF NOT EXISTS r2")
+		runQuery(t, ts, "CREATE TABLE r2.jm (member_id STRING, ab_assignments JSON)")
+		runQuery(t, ts, `INSERT INTO r2.jm VALUES ('m1', PARSE_JSON('{"tile1": "a"}')), ('m2', PARSE_JSON('{}'))`)
+		rows := queryRowValues(t, runQuery(t, ts, "SELECT ab_assignments FROM r2.jm ORDER BY member_id"))
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %v", rows)
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal([]byte(rows[0][0]), &decoded); err != nil {
+			t.Fatalf("ab_assignments not valid JSON: %q (%v)", rows[0][0], err)
+		}
+		if decoded["tile1"] != "a" {
+			t.Fatalf("unexpected JSON content: %q", rows[0][0])
+		}
+		if rows[1][0] != "{}" {
+			t.Fatalf("empty JSON object mangled: %q", rows[1][0])
+		}
+	})
+
+	// Gap #8: the audit-flush MERGE shape (aliases without AS, USING subquery).
+	t.Run("merge_audit_shape", func(t *testing.T) {
+		runQuery(t, ts, "CREATE SCHEMA IF NOT EXISTS r2")
+		runQuery(t, ts, "CREATE TABLE r2.snap (sync_id STRING, pk STRING, op STRING)")
+		runQuery(t, ts, "INSERT INTO r2.snap VALUES ('s1', 'k1', 'old')")
+		runQuery(t, ts, "CREATE TABLE r2.diff (pk STRING, op STRING, rn INT64)")
+		runQuery(t, ts, "INSERT INTO r2.diff VALUES ('k1', 'changed', 1), ('k2', 'added', 2)")
+
+		runQuery(t, ts, `MERGE INTO r2.snap tgt
+USING (
+    SELECT 's1' AS sync_id, d.pk AS pk, d.op AS op
+    FROM r2.diff d
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY d.pk ORDER BY d.rn DESC) = 1
+) src
+ON tgt.sync_id = src.sync_id AND tgt.pk = src.pk
+WHEN MATCHED THEN UPDATE SET op = src.op
+WHEN NOT MATCHED THEN INSERT (sync_id, pk, op) VALUES (src.sync_id, src.pk, src.op)`)
+
+		rows := queryRowValues(t, runQuery(t, ts, "SELECT pk, op FROM r2.snap ORDER BY pk"))
+		if len(rows) != 2 || rows[0][1] != "changed" || rows[1][1] != "added" {
+			t.Fatalf("MERGE result wrong: %v", rows)
+		}
+	})
+
+	// Gap #13: JS UDFs fail fast with a clear message.
+	t.Run("js_udf_clear_error", func(t *testing.T) {
+		resp := doRequest(t, ts, http.MethodPost, bqPath("queries"), map[string]interface{}{
+			"query":        `CREATE FUNCTION f(x STRING) RETURNS STRING LANGUAGE js AS "return x;"`,
+			"useLegacySql": false,
+		})
+		body := readJSON(t, resp)
+		errObj, _ := body["error"].(map[string]interface{})
+		if errObj == nil || !strings.Contains(fmt.Sprint(errObj["message"]), "JavaScript UDFs") {
+			t.Fatalf("expected clear JS UDF error, got %v", body)
+		}
+	})
+}
