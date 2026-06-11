@@ -34,7 +34,6 @@ func NewFunctionRegistry() *FunctionRegistry {
 		"IFNULL":          "COALESCE",
 		"ARRAY_AGG":       "list",
 		"ARRAY_LENGTH":    "len",
-		"GENERATE_UUID":   "uuid",
 		"SAFE_CAST":       "TRY_CAST",
 		"REGEXP_CONTAINS": "regexp_matches",
 		"REGEXP_EXTRACT":  "regexp_extract",
@@ -146,6 +145,17 @@ func NewFunctionRegistry() *FunctionRegistry {
 				return fmt.Sprintf("DATE %s", arg)
 			}
 			return fmt.Sprintf("CAST(%s AS DATE)", arg)
+		},
+	}
+
+	// GENERATE_UUID() -> CAST(uuid() AS VARCHAR)
+	// BQ returns STRING; DuckDB's uuid() returns the UUID type, which is
+	// physically INT128. Left as UUID, a CTAS column inferred from it breaks
+	// string comparisons (Conversion Error: ... to INT128) and is rendered
+	// as base64 BYTES in JSON results.
+	r.functions["GENERATE_UUID"] = FunctionTranslation{
+		Handler: func(args string) string {
+			return "CAST(uuid() AS VARCHAR)"
 		},
 	}
 

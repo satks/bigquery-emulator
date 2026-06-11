@@ -1,8 +1,8 @@
 # SignalSmith E2E — Gap Fixes
 
 > **Status update (2026-06-11):** Gaps **#1–#6 fixed** (commits `eb8cb48`..`c13f08f`);
-> every repro below re-verified live via `POST /queries`. #7 remains open
-> (needs the signalsmith stack for a repro — re-check now that #6 is fixed).
+> every repro below re-verified live via `POST /queries`. #7 root-caused and fixed 2026-06-11
+> (GENERATE_UUID → DuckDB UUID/INT128 in CTAS; no stack needed — repro built from the signalsmith compiler source).
 > A pre-existing translator bug was found and fixed along the way:
 > `translateFunctions` looped forever on self-matching output
 > (`STARTS_WITH→starts_with`; see `.wolf/buglog.json` bug-050).
@@ -77,13 +77,13 @@ Product-side SQL generator references point into the signalsmith repo
 | **Fix** | Map `MD5(x)` → `unhex(md5(x))` so it yields BLOB; JSON encoding then naturally produces base64, and `TO_BASE64` binds. Audit `SHA1/SHA256/SHA512` for the same gap. |
 | **Unblocks** | Sync row-hash comparison fidelity (`internal/connector/bigquery_sync.go:73`); prerequisite for #7. |
 
-## 7. ⏳ OPEN — Golden-record reads: `Could not convert string '…==' to INT128` — needs a repro
+## 7. ✅ FIXED — Golden-record reads: `Could not convert string '…==' to INT128`
 
 | | |
 |---|---|
 | **Signature** | `Conversion Error: Could not convert string 'KBsWxukaRtatKAjU9XT08w==' to INT128` (signalsmith tests 18, 34) |
-| **What's known** | The base64 values are identity `ss_id`s computed **in Go** by the SignalSmith API and inserted as literals; the failing reads are plain test-side queries on `_GOLDEN_RECORD` / `_IDENTITY_GRAPH`. Something in the emulator typed a column as HUGEINT (INT128) where BigQuery would have STRING — comparing/joining the base64 literal then forces a failing cast. Suspects: NULL-typed columns in CTAS inference, or a NUMERIC↔HUGEINT mapping (`pkg/types/mapping.go:59` maps DuckDB HUGEINT→BigNumeric on the way out — check the inbound direction). |
-| **To pin down** | Bring the signalsmith stack up, run `18-golden-record-incremental`, then `DESCRIBE` the `_IDENTITY_GRAPH` / `_GOLDEN_RECORD` tables in the emulator and see which column became HUGEINT and from what CTAS expression. Fixing #6 first may change the picture. |
+| **Root cause (found 2026-06-11)** | The "computed in Go" assumption was wrong: `ss_id` is generated **in SQL** — `GENERATE_UUID() AS ss_id` inside the `_IDENTITY_GRAPH` CTAS (`internal/compiler/identity_compiler.go:631`). The emulator mapped `GENERATE_UUID → uuid`, and DuckDB's `uuid()` returns the UUID type, which is **physically INT128**. CTAS inferred `ss_id` as UUID; reading it back yielded 16 raw bytes that `formatValue` base64-encoded (the mystery `KBsWxukaRtatKAjU9XT08w==` decodes to exactly 16 bytes = a UUID). The test then interpolated that base64 string into `WHERE ss_id = '…'`, and DuckDB failed to cast it to INT128. |
+| **Fix** | `GENERATE_UUID()` now translates to `CAST(uuid() AS VARCHAR)` (`pkg/query/functions.go`), so the column is STRING like BigQuery, values render as normal UUID strings, and literal lookups work. Repro verified live end-to-end; regression test `TestIntegration_GenerateUUID_StringRoundtrip`. |
 
 ---
 

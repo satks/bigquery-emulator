@@ -323,7 +323,7 @@ func TestTranslator_Translate_GENERATE_UUID(t *testing.T) {
 	tr := NewTranslator()
 
 	input := "SELECT GENERATE_UUID() AS id"
-	expect := "SELECT uuid() AS id"
+	expect := "SELECT CAST(uuid() AS VARCHAR) AS id"
 	result, err := tr.Translate(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

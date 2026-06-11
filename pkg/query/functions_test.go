@@ -44,7 +44,6 @@ func TestFunctionRegistry_Get_AllSimpleRenames(t *testing.T) {
 		{"IFNULL", "COALESCE"},
 		{"ARRAY_AGG", "list"},
 		{"ARRAY_LENGTH", "len"},
-		{"GENERATE_UUID", "uuid"},
 		{"SAFE_CAST", "TRY_CAST"},
 		{"REGEXP_CONTAINS", "regexp_matches"},
 		{"REGEXP_EXTRACT", "regexp_extract"},

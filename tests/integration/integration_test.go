@@ -1058,3 +1058,32 @@ func TestIntegration_SignalSmithGapRepros(t *testing.T) {
 		}
 	})
 }
+
+// Gap #7 regression (TestIntegration_SignalSmithGapRepros companion): a CTAS
+// column from GENERATE_UUID() must be STRING, not DuckDB's UUID (INT128) —
+// otherwise reading it yields base64 bytes and string-literal lookups fail
+// with "Could not convert string ... to INT128".
+func TestIntegration_GenerateUUID_StringRoundtrip(t *testing.T) {
+	ts, cleanup := setupIntegrationServer(t)
+	defer cleanup()
+
+	runQuery(t, ts, "CREATE SCHEMA IF NOT EXISTS gap7")
+	runQuery(t, ts, "CREATE OR REPLACE TABLE gap7.ig AS SELECT GENERATE_UUID() AS ss_id, 'u1' AS source_primary_key")
+
+	rows := queryRowValues(t, runQuery(t, ts, "SELECT ss_id FROM gap7.ig"))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %v", rows)
+	}
+	ssID := rows[0][0]
+	// UUID string form: 36 chars with dashes (not 24-char base64 of 16 bytes).
+	if len(ssID) != 36 || strings.Count(ssID, "-") != 4 {
+		t.Fatalf("ss_id is not a UUID string: %q", ssID)
+	}
+
+	// The SignalSmith test-side lookup shape: read the value, use it as a literal.
+	rows = queryRowValues(t, runQuery(t, ts,
+		"SELECT source_primary_key FROM gap7.ig WHERE ss_id = '"+ssID+"'"))
+	if len(rows) != 1 || rows[0][0] != "u1" {
+		t.Fatalf("lookup by ss_id literal failed: %v", rows)
+	}
+}
