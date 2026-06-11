@@ -173,6 +173,23 @@ func formatValue(v interface{}, bqType string) interface{} {
 		return base64.StdEncoding.EncodeToString(b)
 	}
 
+	// JSON columns: always render as JSON text, whatever shape DuckDB's json
+	// extension scanned the value into (map, slice, or scalar). BQ returns
+	// JSON column values as JSON-encoded strings.
+	if upperType == "JSON" {
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+	}
+
+	// Composite values (DuckDB STRUCT/MAP columns scan as Go maps): render as
+	// JSON text. fmt's "map[a:1]" rendering is never valid output.
+	if reflect.TypeOf(v).Kind() == reflect.Map {
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+	}
+
 	// Handle slices (REPEATED/array columns)
 	// BQ format: [{"v": "elem1"}, {"v": "elem2"}]
 	if reflect.TypeOf(v).Kind() == reflect.Slice {

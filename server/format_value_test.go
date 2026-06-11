@@ -142,3 +142,38 @@ func TestFormatValue_Int_AsString(t *testing.T) {
 		t.Errorf("max INT64: got %q, want %q", got, want)
 	}
 }
+
+func TestFormatValue_JSONColumn_Map(t *testing.T) {
+	// DuckDB's json extension scans JSON columns as map[string]interface{};
+	// BQ returns JSON column values as JSON text (gap #12: tests got "map[]").
+	v := map[string]interface{}{"tile1": "a", "tile2": "b"}
+	got := formatValue(v, "JSON")
+	want := `{"tile1":"a","tile2":"b"}`
+	if got != want {
+		t.Errorf("got %v, want %s", got, want)
+	}
+}
+
+func TestFormatValue_JSONColumn_EmptyMap(t *testing.T) {
+	got := formatValue(map[string]interface{}{}, "JSON")
+	if got != "{}" {
+		t.Errorf("got %v, want {}", got)
+	}
+}
+
+func TestFormatValue_JSONColumn_Array(t *testing.T) {
+	// JSON-typed array values must stay JSON text, not BQ repeated format.
+	got := formatValue([]interface{}{1.0, 2.0}, "JSON")
+	if got != "[1,2]" {
+		t.Errorf("got %v, want [1,2]", got)
+	}
+}
+
+func TestFormatValue_StructColumn_Map(t *testing.T) {
+	// STRUCT-scanned maps on non-JSON columns: JSON text beats Go fmt's map[a:1].
+	v := map[string]interface{}{"a": int64(1)}
+	got := formatValue(v, "STRING")
+	if got != `{"a":1}` {
+		t.Errorf("got %v, want {\"a\":1}", got)
+	}
+}
