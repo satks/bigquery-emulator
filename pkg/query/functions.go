@@ -2,8 +2,13 @@ package query
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// nullsModifierRe matches BigQuery's IGNORE NULLS / RESPECT NULLS aggregate
+// argument modifiers, which DuckDB only accepts in window functions.
+var nullsModifierRe = regexp.MustCompile(`(?i)\s+(?:IGNORE|RESPECT)\s+NULLS\b`)
 
 // FunctionTranslation defines how a BigQuery function maps to DuckDB.
 type FunctionTranslation struct {
@@ -32,7 +37,7 @@ func NewFunctionRegistry() *FunctionRegistry {
 	simpleRenames := map[string]string{
 		"COUNTIF":         "count_if",
 		"IFNULL":          "COALESCE",
-		"ARRAY_AGG":       "list",
+		"PARSE_JSON":      "json",
 		"ARRAY_LENGTH":    "len",
 		"SAFE_CAST":       "TRY_CAST",
 		"REGEXP_CONTAINS": "regexp_matches",
@@ -145,6 +150,16 @@ func NewFunctionRegistry() *FunctionRegistry {
 				return fmt.Sprintf("DATE %s", arg)
 			}
 			return fmt.Sprintf("CAST(%s AS DATE)", arg)
+		},
+	}
+
+	// ARRAY_AGG(expr [IGNORE|RESPECT NULLS] [ORDER BY ...]) -> list(expr [ORDER BY ...])
+	// DuckDB only allows IGNORE NULLS in window functions; in an aggregate the
+	// parse dies at the next token. ORDER BY inside the aggregate is supported
+	// by DuckDB and kept as-is.
+	r.functions["ARRAY_AGG"] = FunctionTranslation{
+		Handler: func(args string) string {
+			return "list(" + nullsModifierRe.ReplaceAllString(args, "") + ")"
 		},
 	}
 

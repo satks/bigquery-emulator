@@ -806,3 +806,147 @@ func TestTranslator_Translate_HashFunctionsReturnBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestTranslator_Translate_TimestampAddSub(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"timestamp_add journey shape",
+			"SELECT TIMESTAMP_ADD(tile_entered_at, INTERVAL 5 MINUTE) <= CURRENT_TIMESTAMP() FROM t",
+			"SELECT (tile_entered_at) + INTERVAL 5 MINUTE <= current_timestamp FROM t",
+		},
+		{
+			"timestamp_add qualified column",
+			"SELECT TIMESTAMP_ADD(m.tile_entered_at, INTERVAL 30 MINUTE) FROM m",
+			"SELECT (m.tile_entered_at) + INTERVAL 30 MINUTE FROM m",
+		},
+		{
+			"timestamp_sub of current_timestamp",
+			"SELECT TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)",
+			"SELECT (current_timestamp) - INTERVAL 7 DAY",
+		},
+		{
+			"datetime_add",
+			"SELECT DATETIME_ADD(dt, INTERVAL 1 HOUR) FROM t",
+			"SELECT (dt) + INTERVAL 1 HOUR FROM t",
+		},
+		{
+			"time_sub",
+			"SELECT TIME_SUB(tm, INTERVAL 10 SECOND) FROM t",
+			"SELECT (tm) - INTERVAL 10 SECOND FROM t",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTranslator_Translate_ArrayAggIgnoreNulls(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"trait materialization shape",
+			"SELECT ARRAY_AGG(STRUCT(src.product_id AS product_id) IGNORE NULLS ORDER BY _ranked._rn) FROM t",
+			"SELECT list({'product_id': src.product_id} ORDER BY _ranked._rn) FROM t",
+		},
+		{
+			"scalar ignore nulls",
+			"SELECT ARRAY_AGG(x IGNORE NULLS) FROM t",
+			"SELECT list(x) FROM t",
+		},
+		{
+			"respect nulls",
+			"SELECT ARRAY_AGG(x RESPECT NULLS) FROM t",
+			"SELECT list(x) FROM t",
+		},
+		{
+			"plain unchanged",
+			"SELECT ARRAY_AGG(x) FROM t",
+			"SELECT list(x) FROM t",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTranslator_Translate_UnnestAlias(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"exists filter shape",
+			`SELECT 1 FROM t parent WHERE EXISTS(SELECT 1 FROM UNNEST(parent.tags) AS _el WHERE _el = 'vip')`,
+			`SELECT 1 FROM t parent WHERE EXISTS(SELECT 1 FROM UNNEST(parent.tags) AS _el_t(_el) WHERE _el = 'vip')`,
+		},
+		{
+			"comma join",
+			"SELECT t.value FROM s, UNNEST(topk) AS t ORDER BY t.count DESC",
+			"SELECT t.value FROM s, UNNEST(topk) AS t_t(t) ORDER BY t.count DESC",
+		},
+		{
+			"select-list unnest untouched",
+			"SELECT UNNEST(arr) AS x FROM t",
+			"SELECT UNNEST(arr) AS x FROM t",
+		},
+		{
+			"already table-column form untouched",
+			"SELECT i FROM UNNEST(arr) AS t(i)",
+			"SELECT i FROM UNNEST(arr) AS t(i)",
+		},
+		{
+			"no alias untouched",
+			"SELECT * FROM UNNEST(arr)",
+			"SELECT * FROM UNNEST(arr)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTranslator_TranslateMulti_JSUDFClearError(t *testing.T) {
+	tr := NewTranslator()
+	_, err := tr.TranslateMulti(`CREATE OR REPLACE FUNCTION f(x STRING) RETURNS STRING LANGUAGE js AS r"""return x;"""`)
+	if err == nil {
+		t.Fatal("expected error for JS UDF")
+	}
+	if !strings.Contains(err.Error(), "JavaScript UDFs") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+}

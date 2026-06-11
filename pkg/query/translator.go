@@ -30,6 +30,12 @@ var (
 	// dateSubRe matches DATE_SUB(expr, INTERVAL n unit).
 	dateSubRe = regexp.MustCompile(`(?i)\bDATE_SUB\s*\(\s*(.+?)\s*,\s*(INTERVAL\s+.+?)\s*\)`)
 
+	// timestampAddRe matches TIMESTAMP_ADD/DATETIME_ADD/TIME_ADD(expr, INTERVAL n unit).
+	timestampAddRe = regexp.MustCompile(`(?i)\b(?:TIMESTAMP|DATETIME|TIME)_ADD\s*\(\s*(.+?)\s*,\s*(INTERVAL\s+.+?)\s*\)`)
+
+	// timestampSubRe matches TIMESTAMP_SUB/DATETIME_SUB/TIME_SUB(expr, INTERVAL n unit).
+	timestampSubRe = regexp.MustCompile(`(?i)\b(?:TIMESTAMP|DATETIME|TIME)_SUB\s*\(\s*(.+?)\s*,\s*(INTERVAL\s+.+?)\s*\)`)
+
 	// dateDiffRe matches DATE_DIFF(d1, d2, part).
 	dateDiffRe = regexp.MustCompile(`(?i)\bDATE_DIFF\s*\(\s*(.+?)\s*,\s*(.+?)\s*,\s*(\w+)\s*\)`)
 
@@ -116,6 +122,12 @@ func (t *Translator) TranslateMulti(sql string) ([]string, error) {
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
 		return nil, errors.New("empty SQL string")
+	}
+
+	// JavaScript UDFs need a JS engine; DuckDB has none. Fail fast with a
+	// clear message instead of a confusing parser error downstream.
+	if jsUDFRe.MatchString(trimmed) {
+		return nil, errors.New("JavaScript UDFs (CREATE FUNCTION ... LANGUAGE js) are not supported by the emulator")
 	}
 
 	// Check if this is a MERGE statement — needs special decomposition
@@ -215,6 +227,12 @@ func (t *Translator) Translate(sql string) (string, error) {
 	// 7. DATE_SUB(expr, INTERVAL n unit) -> (expr) - INTERVAL n unit
 	result = dateSubRe.ReplaceAllString(result, "($1) - $2")
 
+	// 7b. TIMESTAMP_ADD/DATETIME_ADD/TIME_ADD(expr, INTERVAL n unit) -> (expr) + INTERVAL n unit
+	result = timestampAddRe.ReplaceAllString(result, "($1) + $2")
+
+	// 7c. TIMESTAMP_SUB/DATETIME_SUB/TIME_SUB(expr, INTERVAL n unit) -> (expr) - INTERVAL n unit
+	result = timestampSubRe.ReplaceAllString(result, "($1) - $2")
+
 	// 8. DATE_DIFF(d1, d2, part) -> date_diff('part', d2, d1) (note reversal)
 	result = dateDiffRe.ReplaceAllString(result, "date_diff('$3', $2, $1)")
 
@@ -242,6 +260,9 @@ func (t *Translator) Translate(sql string) (string, error) {
 
 	// 12. SELECT * EXCEPT(cols) -> SELECT * EXCLUDE (cols)
 	result = starExceptRe.ReplaceAllString(result, "${1}EXCLUDE (")
+
+	// 12b. FROM UNNEST(x) AS alias -> FROM UNNEST(x) AS alias_t(alias)
+	result = rewriteUnnestAliases(result)
 
 	// 13. Function translations via registry
 	result = t.translateFunctions(result)
@@ -345,6 +366,84 @@ func replaceFunctionCalls(sql string, pattern *regexp.Regexp, translation Functi
 	}
 
 	return result
+}
+
+// jsUDFRe detects CREATE FUNCTION ... LANGUAGE js, which cannot be supported
+// (DuckDB has no JavaScript engine).
+var jsUDFRe = regexp.MustCompile(`(?is)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?FUNCTION\b.*\bLANGUAGE\s+js\b`)
+
+// unnestRe finds UNNEST( occurrences for the alias rewrite pass.
+var unnestRe = regexp.MustCompile(`(?i)\bUNNEST\s*\(`)
+
+// unnestAliasRe matches a bare alias right after an UNNEST(...) block.
+var unnestAliasRe = regexp.MustCompile(`(?i)^\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
+// rewriteUnnestAliases converts BigQuery's element-binding UNNEST alias to
+// DuckDB's table(column) alias form in table position:
+//
+//	FROM UNNEST(x) AS _el  ->  FROM UNNEST(x) AS _el_t(_el)
+//
+// In BigQuery the alias names the ELEMENT; in DuckDB a bare alias names the
+// TABLE, so element comparisons fail (e.g. "Type VARCHAR ... can't be cast to
+// the destination type STRUCT"). Only rewrites UNNEST preceded by FROM, JOIN,
+// or a comma — BigQuery doesn't allow UNNEST in the select list, so a comma
+// before UNNEST is always a FROM-list separator in BQ input.
+func rewriteUnnestAliases(sql string) string {
+	result := sql
+	from := 0
+	for {
+		loc := unnestRe.FindStringIndex(result[from:])
+		if loc == nil {
+			break
+		}
+		start := from + loc[0]
+		openIdx := start + strings.Index(result[start:], "(")
+		closeIdx := findMatchingParen(result, openIdx)
+		if closeIdx < 0 {
+			break
+		}
+		from = closeIdx // resume after this UNNEST regardless of rewrite
+
+		if !isTablePosition(result, start) {
+			continue
+		}
+		m := unnestAliasRe.FindStringSubmatch(result[closeIdx+1:])
+		if m == nil {
+			continue
+		}
+		alias := m[1]
+		aliasEnd := closeIdx + 1 + len(m[0])
+		// Already table(column) form? Next non-space char is '('.
+		if strings.HasPrefix(strings.TrimLeft(result[aliasEnd:], " \t\n\r"), "(") {
+			continue
+		}
+
+		replacement := " AS " + alias + "_t(" + alias + ")"
+		result = result[:closeIdx+1] + replacement + result[aliasEnd:]
+		from = closeIdx + 1 + len(replacement)
+	}
+	return result
+}
+
+// isTablePosition reports whether the token preceding position start is FROM,
+// JOIN, or a comma.
+func isTablePosition(s string, start int) bool {
+	i := start - 1
+	for i >= 0 && isSpaceByte(s[i]) {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	if s[i] == ',' {
+		return true
+	}
+	end := i + 1
+	for i >= 0 && isWordChar(s[i]) {
+		i--
+	}
+	word := strings.ToUpper(s[i+1 : end])
+	return word == "FROM" || word == "JOIN"
 }
 
 // isWordChar reports whether c is a regex word character ([0-9A-Za-z_]).
