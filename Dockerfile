@@ -20,13 +20,15 @@ COPY . .
 
 # Build with cross-compilation support
 # For CGO cross-compilation, we need the appropriate toolchain
+# DuckDB is C++: the cross toolchain needs g++ for the target-arch libstdc++,
+# not just gcc (otherwise: "ld: cannot find -lstdc++").
 RUN if [ "$TARGETARCH" = "arm64" ] && [ "$BUILDPLATFORM" != "linux/arm64" ]; then \
-        apt-get update && apt-get install -y gcc-aarch64-linux-gnu && \
-        CC=aarch64-linux-gnu-gcc GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        apt-get update && apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu && \
+        CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
         go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
     elif [ "$TARGETARCH" = "amd64" ] && [ "$BUILDPLATFORM" != "linux/amd64" ]; then \
-        apt-get update && apt-get install -y gcc-x86-64-linux-gnu && \
-        CC=x86_64-linux-gnu-gcc GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        apt-get update && apt-get install -y gcc-x86-64-linux-gnu g++-x86-64-linux-gnu && \
+        CC=x86_64-linux-gnu-gcc CXX=x86_64-linux-gnu-g++ GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
         go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
     else \
         go build -o /bigquery-emulator ./cmd/bigquery-emulator/; \
