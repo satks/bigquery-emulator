@@ -6,7 +6,21 @@
 > A pre-existing translator bug was found and fixed along the way:
 > `translateFunctions` looped forever on self-matching output
 > (`STARTS_WITH→starts_with`; see `.wolf/buglog.json` bug-050).
-> Pending re-run of the full SignalSmith suite against the new emulator ref.
+>
+> **Re-run #1 (2026-06-11, emulator ref `c12cbfc` — i.e. WITHOUT the #7 fix):**
+> `bigquery-parallel` went **388 → 426 passed**, **30 → 21 failed**, 124 → 94 skipped,
+> and 2× faster (6.8m → 3.4m). All six round-1 repros verified live. The remaining
+> failures are a **second round of gaps — see "Round 2" below** (#8–#12, pinned from
+> API logs + live replays). #7 (INT128) still reproduced in that run, as expected —
+> its fix landed in `1c381eb`, after `c12cbfc`.
+>
+> **Re-run #2 (2026-06-11, emulator ref `1c381eb` — WITH the #7 fix):**
+> **465 passed / 19 failed / 57 skipped (2.8m)**. INT128 is fully gone — tests 18 & 34
+> pass, unlocking their serial dependents (+39 passing vs re-run #1). Every remaining
+> failure is attributed: #9 TIMESTAMP_ADD (journey cluster, 12 of 19), #8 MERGE (06/08/35),
+> #10 IGNORE NULLS (10-traits), #11 UNNEST alias (11-filters), #12 map[] serialization
+> (27 AB-assignments), #13 JS UDF — structural (31-field-transforms), + 3 needs-investigation.
+> Cumulative: **388 → 465 passed (+77), 30 → 19 failed, 6.8m → 2.8m (2.4×)**.
 
 Findings from running the SignalSmith E2E suite against this emulator
 (commit `3b40d55`, 2026-06-10). Suite results: `bigquery-foundation` **14/14**,
@@ -87,13 +101,82 @@ Product-side SQL generator references point into the signalsmith repo
 
 ---
 
+# Round 2 — found after the `c12cbfc` re-run (2026-06-11)
+
+> **Status (2026-06-11, commits `b977893`..`a8de98e`):** #8–#12 fixed; #13 now
+> fails fast with a clear "JavaScript UDFs ... not supported" error (option (a),
+> permanent limitation). Root-cause notes: #8 was the MERGE *parser* — aliases
+> without `AS` + nested parens in the USING subquery broke the single-regex
+> header (native MERGE confirmed unavailable in the bundled DuckDB; decomposition
+> kept). #12 was DuckDB's json extension scanning JSON columns as Go maps. Also
+> mapped `PARSE_JSON → json` (AB-assignment write path). All shapes guarded by
+> `TestIntegration_Round2GapRepros`. Pending suite re-run.
+
+The 21 remaining failures cluster into five new emulator gaps. All pinned from
+SignalSmith API logs + live replays against the running emulator.
+
+## 8. ✅ FIXED — `MERGE` statements not translated
+
+| | |
+|---|---|
+| **Signature** | `SQL translation error: cannot parse MERGE statement` (API WARN: `audit flush failed (best-effort, continuing)` — repeats every flush) |
+| **Impact** | Sync-audit `sync_snapshot` never gets rows → tests 06, 08, 35 time out waiting for snapshot state. Best-effort, so syncs themselves pass. |
+| **Fix** | Translate BigQuery `MERGE INTO … WHEN MATCHED/NOT MATCHED` — DuckDB ≥1.4 has native `MERGE INTO`; if the bundled go-duckdb is older, rewrite as `DELETE … USING` + `INSERT … SELECT`. |
+
+## 9. ✅ FIXED — `TIMESTAMP_ADD` (and the date/time `_ADD/_SUB` family) missing
+
+| | |
+|---|---|
+| **Signature** | `Catalog Error: Scalar Function with name timestamp_add does not exist` (12× — journey `time_delay` + `hold_until` tiles) |
+| **Impact** | Most of the journey cluster: 25, 27 (run status `failed`). |
+| **Fix** | Translate `TIMESTAMP_ADD(ts, INTERVAL n unit)` → `ts + INTERVAL (n) unit`. Audit the whole family: `TIMESTAMP_SUB`, `DATE_ADD/SUB`, `DATETIME_ADD/SUB`, `TIME_ADD/SUB`. Note the `INTERVAL n unit` arg is special syntax, not a value — needs a translator rule, not a macro. |
+
+## 10. ✅ FIXED — `IGNORE NULLS` inside `ARRAY_AGG`
+
+| | |
+|---|---|
+| **Signature** | `Parser Error: syntax error at or near "ORDER"` in trait materialization |
+| **Evidence** | `ARRAY_AGG(STRUCT(…) IGNORE NULLS ORDER BY _ranked._rn)` — DuckDB only allows `IGNORE NULLS` in window functions, so the parse dies at the token after it. |
+| **Impact** | Trait evaluation pipeline (10, 36, 37 — `poll trait run to completion`). |
+| **Fix** | Strip `IGNORE NULLS` from aggregate args (BigQuery STRUCT args are never NULL here, so it's a no-op); for scalar-arg fidelity translate to `… FILTER (WHERE arg IS NOT NULL)`. Also handle `RESPECT NULLS` and BigQuery's `LIMIT n` inside aggregates while in there. |
+
+## 11. ✅ FIXED — `UNNEST(arr) AS alias` aliases the TABLE in DuckDB, the ELEMENT in BigQuery
+
+| | |
+|---|---|
+| **Signature** | `Conversion Error: Type VARCHAR with value 'vip' can't be cast to the destination type STRUCT` on `… FROM UNNEST(parent."tags") AS _el WHERE _el = 'vip'` |
+| **Impact** | Array audience filters (11: contains_any/contains_all/…); kills audience estimates that use them. |
+| **Fix** | Translate `UNNEST(x) AS alias` → `UNNEST(x) AS _t(alias)` (table alias + column alias) so the bare alias binds to the element. Watch BigQuery's `WITH OFFSET` variant. |
+
+## 12. ✅ FIXED — STRUCT/MAP cell values serialized as Go `fmt` strings
+
+| | |
+|---|---|
+| **Signature** | Tests receive literal `"map[]"` / `"map[a:1 b:x]"` — e.g. `SyntaxError: Unexpected token 'm', "map[]" is not valid JSON` parsing `ab_assignments` |
+| **Impact** | Journey context/memory/AB-assignment assertions (27 cluster). |
+| **Fix** | In the result encoder (`formatValue` — same layer as the #7 fix): composite values must follow the BigQuery wire format — STRUCT → nested `{"v":{"f":[…]}}`, JSON-typed columns → JSON text. Never `fmt.Sprintf` a Go map. |
+
+## 13. 🚧 STRUCTURAL (clean error since `b977893`) — JavaScript UDFs (`CREATE FUNCTION … LANGUAGE js`)
+
+| | |
+|---|---|
+| **Signature** | 31-field-transforms `sync with JS custom-code transform pushes down…` times out waiting for webhook output. |
+| **Root cause** | SignalSmith pushes JS custom-code transforms down as BigQuery JS UDFs (`internal/worker/pipeline.go:1616`: `CREATE OR REPLACE FUNCTION … LANGUAGE js AS r"""…"""`). DuckDB has no JavaScript engine — this is not a translation gap. |
+| **Options** | (a) document as a permanent emulator limitation; (b) embed a JS interpreter (e.g. `goja`) and execute the UDF per-row in Go — significant work, exact-fidelity risk. Recommend (a) for now. |
+
+## Needs investigation (may be product/test-side, 1× each)
+
+- `ab_split branch percentages sum to 60, must equal 100` (27) — API-side validation; check whether an emulator misread feeds it.
+- Canvas `priority node output cannot be used as a sub-filter` (43 I.4) — product validation, possibly a pre-existing test/product mismatch.
+- 38-audience-overlap `correct counts` assertion — COUNTIF now works; recount after #11 lands (overlap inputs use array filters).
+
+---
+
 ## Suggested order (impact-per-effort)
 
-1. **#1 hyphenated projects** — biggest unlock, by far
-2. **#3 COUNTIF + #4 FARM_FINGERPRINT** — trivial mappings, three test files
-3. **#2 `* EXCEPT`** — moderate, unlocks canvas suite
-4. **#5 STRUCT** — hardest rewrite, unlocks traits
-5. **#6 MD5→BLOB**, then **#7 repro** — golden record last
+Round 1 (all fixed): **#1** hyphenated projects → **#3/#4** COUNTIF + FARM_FINGERPRINT → **#2** `* EXCEPT` → **#5** STRUCT → **#6** MD5→BLOB → **#7** GENERATE_UUID.
+
+Round 2: **#9 TIMESTAMP_ADD** (12 errors, biggest cluster) → **#8 MERGE** (3 audit tests) → **#10 IGNORE NULLS** (3 trait tests) → **#11 UNNEST alias** (array filters) → **#12 STRUCT serialization** (journey context assertions).
 
 ## Verification loop
 
