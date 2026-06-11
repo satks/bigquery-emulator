@@ -895,3 +895,166 @@ func TestIntegration_Health(t *testing.T) {
 		t.Fatalf("expected status=ok, got %v", result["status"])
 	}
 }
+
+// runQuery executes SQL via the synchronous /queries endpoint and fails the
+// test on a non-200 response. Returns the decoded response body.
+func runQuery(t *testing.T, ts *httptest.Server, sql string) map[string]interface{} {
+	t.Helper()
+	resp := doRequest(t, ts, http.MethodPost, bqPath("queries"), map[string]interface{}{
+		"query":        sql,
+		"useLegacySql": false,
+	})
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("query %q failed: %d %s", sql, resp.StatusCode, string(b))
+	}
+	return readJSON(t, resp)
+}
+
+// runQueryExpectError executes SQL via /queries and fails the test if it succeeds.
+func runQueryExpectError(t *testing.T, ts *httptest.Server, sql string) {
+	t.Helper()
+	resp := doRequest(t, ts, http.MethodPost, bqPath("queries"), map[string]interface{}{
+		"query":        sql,
+		"useLegacySql": false,
+	})
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("query %q succeeded, expected error", sql)
+	}
+}
+
+// queryRowValues extracts row values from a BQ wire-format query response:
+// {"rows":[{"f":[{"v":...}]}]} -> [][]string.
+func queryRowValues(t *testing.T, body map[string]interface{}) [][]string {
+	t.Helper()
+	rawRows, _ := body["rows"].([]interface{})
+	out := make([][]string, len(rawRows))
+	for i, r := range rawRows {
+		fields := r.(map[string]interface{})["f"].([]interface{})
+		vals := make([]string, len(fields))
+		for j, f := range fields {
+			v := f.(map[string]interface{})["v"]
+			vals[j], _ = v.(string)
+		}
+		out[i] = vals
+	}
+	return out
+}
+
+// TestIntegration_SignalSmithGapRepros executes the repro shapes from
+// SIGNALSMITH_GAPS.md (#1-#6) through the full HTTP stack, so the gap fixes
+// are guarded end-to-end and don't depend on the external SignalSmith suite.
+func TestIntegration_SignalSmithGapRepros(t *testing.T) {
+	ts, cleanup := setupIntegrationServer(t)
+	defer cleanup()
+
+	// Gap #1: unquoted hyphenated project IDs in table paths, full lifecycle.
+	t.Run("hyphenated_project_lifecycle", func(t *testing.T) {
+		runQuery(t, ts, "CREATE SCHEMA IF NOT EXISTS test-project.gap_it")
+
+		// DDL sync must register the dataset as gap_it, not "test".
+		resp := doRequest(t, ts, http.MethodGet, bqPath("datasets"), nil)
+		dsBody := readJSON(t, resp)
+		found := false
+		if dsList, ok := dsBody["datasets"].([]interface{}); ok {
+			for _, d := range dsList {
+				ref := d.(map[string]interface{})["datasetReference"].(map[string]interface{})
+				if ref["datasetId"] == "gap_it" {
+					found = true
+				}
+				if ref["datasetId"] == "test" {
+					t.Errorf("DDL sync registered dataset %q — hyphenated project prefix not normalized", "test")
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("dataset gap_it not registered via DDL sync: %v", dsBody)
+		}
+
+		runQuery(t, ts, "CREATE TABLE test-project.gap_it.t1 (a INT64, b STRING)")
+		runQuery(t, ts, "INSERT INTO test-project.gap_it.t1 VALUES (1, 'x'), (2, 'y')")
+
+		rows := queryRowValues(t, runQuery(t, ts, "SELECT * FROM test-project.gap_it.t1 ORDER BY a"))
+		if len(rows) != 2 || rows[0][0] != "1" || rows[0][1] != "x" || rows[1][0] != "2" || rows[1][1] != "y" {
+			t.Fatalf("unexpected rows after insert: %v", rows)
+		}
+
+		runQuery(t, ts, "UPDATE test-project.gap_it.t1 SET b = 'z' WHERE a = 1")
+		runQuery(t, ts, "DELETE FROM test-project.gap_it.t1 WHERE a = 2")
+
+		rows = queryRowValues(t, runQuery(t, ts, "SELECT * FROM test-project.gap_it.t1 ORDER BY a"))
+		if len(rows) != 1 || rows[0][0] != "1" || rows[0][1] != "z" {
+			t.Fatalf("unexpected rows after update/delete: %v", rows)
+		}
+
+		runQuery(t, ts, "DROP TABLE IF EXISTS test-project.gap_it.t1")
+		runQueryExpectError(t, ts, "SELECT * FROM test-project.gap_it.t1")
+	})
+
+	// Gap #2: SELECT * EXCEPT(col) -> DuckDB * EXCLUDE (col).
+	t.Run("star_except", func(t *testing.T) {
+		body := runQuery(t, ts, "SELECT * EXCEPT(_pp_rn) FROM (SELECT 1 AS a, 2 AS _pp_rn)")
+		schema := body["schema"].(map[string]interface{})["fields"].([]interface{})
+		if len(schema) != 1 || schema[0].(map[string]interface{})["name"] != "a" {
+			t.Fatalf("expected single field 'a', got %v", schema)
+		}
+		rows := queryRowValues(t, body)
+		if len(rows) != 1 || rows[0][0] != "1" {
+			t.Fatalf("expected one row [1], got %v", rows)
+		}
+	})
+
+	// Gap #3: COUNTIF -> count_if.
+	t.Run("countif", func(t *testing.T) {
+		rows := queryRowValues(t, runQuery(t, ts,
+			"SELECT COUNTIF(x > 1) FROM (SELECT 2 AS x UNION ALL SELECT 0)"))
+		if len(rows) != 1 || rows[0][0] != "1" {
+			t.Fatalf("expected [1], got %v", rows)
+		}
+	})
+
+	// Gap #4: FARM_FINGERPRINT macro — deterministic, bucketable.
+	t.Run("farm_fingerprint", func(t *testing.T) {
+		const q = "SELECT MOD(ABS(FARM_FINGERPRINT(CAST('abc' AS STRING))), 100)"
+		first := queryRowValues(t, runQuery(t, ts, q))
+		second := queryRowValues(t, runQuery(t, ts, q))
+		if len(first) != 1 || len(second) != 1 || first[0][0] != second[0][0] {
+			t.Fatalf("not deterministic: %v vs %v", first, second)
+		}
+		var bucket int
+		if _, err := fmt.Sscanf(first[0][0], "%d", &bucket); err != nil || bucket < 0 || bucket >= 100 {
+			t.Fatalf("bucket out of range: %q", first[0][0])
+		}
+	})
+
+	// Gap #5: STRUCT(expr AS name) constructor. TO_JSON_STRING gives a
+	// deterministic value; raw struct JSON wire-format fidelity is a known
+	// separate concern not asserted here.
+	t.Run("struct_constructor", func(t *testing.T) {
+		rows := queryRowValues(t, runQuery(t, ts, "SELECT TO_JSON_STRING(STRUCT(1 AS a, 'x' AS b))"))
+		if len(rows) != 1 || rows[0][0] != `{"a":1,"b":"x"}` {
+			t.Fatalf(`expected {"a":1,"b":"x"}, got %v`, rows)
+		}
+		// The trait-materialization shape must execute.
+		body := runQuery(t, ts, "SELECT ARRAY_AGG(STRUCT(o AS v)) FROM (SELECT 1 AS o)")
+		if rawRows, _ := body["rows"].([]interface{}); len(rawRows) != 1 {
+			t.Fatalf("expected 1 row, got %v", body["rows"])
+		}
+	})
+
+	// Gap #6: MD5 returns BYTES (base64 in JSON, matches real BigQuery).
+	t.Run("md5_bytes", func(t *testing.T) {
+		const golden = "kAFQmDzST7DWlj99KOF/cg=="
+		rows := queryRowValues(t, runQuery(t, ts, "SELECT TO_BASE64(MD5('abc'))"))
+		if len(rows) != 1 || rows[0][0] != golden {
+			t.Fatalf("TO_BASE64(MD5): expected %s, got %v", golden, rows)
+		}
+		rows = queryRowValues(t, runQuery(t, ts, "SELECT MD5('abc')"))
+		if len(rows) != 1 || rows[0][0] != golden {
+			t.Fatalf("raw MD5: expected base64 %s, got %v", golden, rows)
+		}
+	})
+}
