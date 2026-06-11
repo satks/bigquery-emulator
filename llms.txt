@@ -1,0 +1,30 @@
+# BigQuery Emulator (DuckDB backend)
+
+> A local Google Cloud BigQuery emulator written in Go, backed by DuckDB. It speaks the BigQuery REST API v2 (datasets, tables, jobs, queries, streaming inserts, Storage API) and translates BigQuery Standard SQL to DuckDB SQL at runtime, so the official Go and Node.js BigQuery client libraries work against it unchanged. Built for integration tests, CI pipelines, and offline local development — no GCP project, credentials, or network access required.
+
+Key facts:
+- Binary: `bigquery-emulator --project=<id> --port=9050`; default HTTP port 9050; in-memory or file-backed DuckDB storage.
+- Docker image: `ghcr.io/satks/bigquery-emulator` (published on version tags; multi-arch amd64+arm64).
+- SDKs verified: `cloud.google.com/go/bigquery` (Go) and `@google-cloud/bigquery` (Node.js). Point them at `http://localhost:9050` with authentication disabled, or set `BIGQUERY_EMULATOR_HOST=localhost:9050`.
+- SQL translation covers project-qualified table paths (backticked and unquoted hyphenated), BigQuery types (INT64/FLOAT64/STRING/BOOL/BYTES/NUMERIC/BIGNUMERIC/TIMESTAMP/DATETIME/JSON), ARRAY<T>, STRUCT constructors, `* EXCEPT(...)`, MERGE decomposition, UNNEST element aliasing, IGNORE NULLS, the DATE/TIMESTAMP/DATETIME/TIME `_ADD/_SUB/_DIFF/_TRUNC` families, and 30+ function mappings (COUNTIF, SAFE_DIVIDE, SAFE_CAST, FARM_FINGERPRINT, GENERATE_UUID, MD5/SHA1/SHA256 returning BYTES, PARSE_JSON, TO_JSON_STRING, FORMAT/PARSE_DATE/TIMESTAMP, regexp functions).
+- Known limitations: no JavaScript UDFs (`CREATE FUNCTION ... LANGUAGE js` returns a clear error), no SHA512, FARM_FINGERPRINT values are stable/deterministic but do not equal real FarmHash64, no BI Engine / ML / external tables.
+- License: MIT.
+
+## Docs
+
+- [README](https://github.com/satks/bigquery-emulator/blob/main/README.md): features, quick start, SDK wiring, configuration flags, API endpoint list
+- [COMPATIBILITY](https://github.com/satks/bigquery-emulator/blob/main/COMPATIBILITY.md): full supported/unsupported matrix — SQL features, functions, REST endpoints, wire-format details
+- [AGENTS](https://github.com/satks/bigquery-emulator/blob/main/AGENTS.md): build/test/run commands and code-layout guide for AI coding agents
+- [ARCHITECTURE](https://github.com/satks/bigquery-emulator/blob/main/ARCHITECTURE.md): system layers, query flow, component responsibilities
+- [DESIGN_DECISIONS](https://github.com/satks/bigquery-emulator/blob/main/DESIGN_DECISIONS.md): why DuckDB, string-level translation, metadata-in-DuckDB, permission bypass mode
+
+## Source map
+
+- [pkg/query](https://github.com/satks/bigquery-emulator/tree/main/pkg/query): SQL classifier, BigQuery→DuckDB translator, function registry, MERGE decomposition, executor
+- [server](https://github.com/satks/bigquery-emulator/tree/main/server): REST API v2 handlers, BigQuery wire-format serialization, error envelopes, DDL metadata sync
+- [pkg/types](https://github.com/satks/bigquery-emulator/tree/main/pkg/types): BigQuery ↔ DuckDB ↔ Apache Arrow type mapping
+- [tests/integration](https://github.com/satks/bigquery-emulator/tree/main/tests/integration): end-to-end HTTP tests, including real-world SQL shape regressions
+
+## Optional
+
+- [SIGNALSMITH_GAPS](https://github.com/satks/bigquery-emulator/blob/main/SIGNALSMITH_GAPS.md): case study — gaps found by a production e2e suite and how each was root-caused and fixed

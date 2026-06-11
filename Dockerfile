@@ -39,6 +39,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+LABEL org.opencontainers.image.title="BigQuery Emulator (DuckDB backend)" \
+      org.opencontainers.image.description="Local Google Cloud BigQuery emulator: REST API v2 + BigQuery SQL translation on DuckDB. For integration tests, CI, and offline development — no GCP credentials needed." \
+      org.opencontainers.image.source="https://github.com/satks/bigquery-emulator" \
+      org.opencontainers.image.documentation="https://github.com/satks/bigquery-emulator/blob/main/README.md" \
+      org.opencontainers.image.licenses="MIT"
+
 COPY --from=builder /bigquery-emulator /usr/local/bin/bigquery-emulator
 
 EXPOSE 9050

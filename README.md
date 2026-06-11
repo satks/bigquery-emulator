@@ -1,6 +1,12 @@
 # BigQuery Emulator (DuckDB Backend)
 
-A high-performance local BigQuery emulator powered by DuckDB. Drop-in replacement for Google Cloud BigQuery during development and testing.
+[![CI](https://github.com/satks/bigquery-emulator/actions/workflows/ci.yml/badge.svg)](https://github.com/satks/bigquery-emulator/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](go.mod)
+
+A high-performance **local Google Cloud BigQuery emulator** powered by [DuckDB](https://duckdb.org). Run BigQuery integration tests offline — in CI, in Docker, or on your laptop — with **no GCP project, no credentials, and no network access**. The official Go and Node.js BigQuery client libraries work against it unchanged.
+
+Speaks the **BigQuery REST API v2** and translates **BigQuery Standard SQL → DuckDB SQL** at runtime: project-qualified table paths, `STRUCT`/`ARRAY`, `MERGE`, `UNNEST`, `* EXCEPT`, the timestamp arithmetic families, and 30+ function mappings. See the full [compatibility matrix](COMPATIBILITY.md).
 
 ## Features
 
@@ -43,8 +49,22 @@ const bigquery = new BigQuery({projectId: 'test-project'});
 ### Docker
 
 ```bash
+# Pre-built multi-arch image (published from version tags)
+docker run -p 9050:9050 ghcr.io/satks/bigquery-emulator --project=test-project
+
+# Or build locally
 docker build -t bigquery-emulator .
 docker run -p 9050:9050 bigquery-emulator --project=test-project
+```
+
+### CI (GitHub Actions service container)
+
+```yaml
+services:
+  bigquery:
+    image: ghcr.io/satks/bigquery-emulator:latest
+    ports: ["9050:9050"]
+# then: BIGQUERY_EMULATOR_HOST=localhost:9050
 ```
 
 ## SQL Translation
@@ -128,11 +148,36 @@ tests/
   benchmark/             Performance benchmarks
 ```
 
+## FAQ
+
+**How do I test BigQuery locally without a GCP account?**
+Run this emulator (`binary`, Docker, or CI service container), point your SDK at `http://localhost:9050` with auth disabled, and use it like real BigQuery. Everything runs in-process on DuckDB.
+
+**How is this different from [goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)?**
+goccy's emulator parses SQL with ZetaSQL (Google's own parser) on a SQLite backend — stricter SQL fidelity, heavier dependency chain. This project uses DuckDB (a columnar OLAP engine, much closer to BigQuery's execution model for analytical SQL) with a translation layer, adds an enforceable permission system (IAM roles, row-level security, column masking), the Arrow Storage API, and is a single static-ish Go binary that builds in seconds. Pick by your workload: maximum parser fidelity → goccy; analytical query performance, ARRAY/STRUCT-heavy SQL, and CI speed → this one.
+
+**Does it support MERGE / STRUCT / UNNEST / TIMESTAMP_ADD / `* EXCEPT`?**
+Yes — see the [compatibility matrix](COMPATIBILITY.md) for the complete list with translation details.
+
+**What doesn't work?**
+JavaScript UDFs (no JS engine in DuckDB — clear error returned), `SHA512`, `UNNEST ... WITH OFFSET`, BigQuery ML / BI Engine / external tables. `FARM_FINGERPRINT` is deterministic but doesn't match real FarmHash64 values.
+
+**Is the data persistent?**
+By default it's in-memory. Pass `--database=/path/file.duckdb` for persistence across restarts.
+
 ## Documentation
 
+- [COMPATIBILITY.md](COMPATIBILITY.md) — supported SQL, functions, endpoints, and known divergences
+- [AGENTS.md](AGENTS.md) — build/test/run guide for AI coding agents (and humans)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — system layers, data flow, component details
 - [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) — key technical decisions with rationale
 - [SPEC.md](SPEC.md) — original DuckDB backend specification
+- [CONTRIBUTING.md](CONTRIBUTING.md) — the bug-report format that gets gaps fixed fast
+- [llms.txt](llms.txt) — condensed project summary for LLMs and AI agents
+
+## Keywords
+
+BigQuery emulator · local BigQuery · BigQuery testing · mock BigQuery · fake BigQuery server · BigQuery Docker · BigQuery CI · DuckDB · offline BigQuery development · BigQuery integration tests · Go · golang
 
 ## License
 
