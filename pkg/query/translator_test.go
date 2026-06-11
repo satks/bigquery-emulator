@@ -725,3 +725,54 @@ func TestTranslator_Translate_StarExcept(t *testing.T) {
 		})
 	}
 }
+
+func TestTranslator_Translate_StructConstructor(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"named fields",
+			"SELECT STRUCT(1 AS a, 'x' AS b)",
+			"SELECT {'a': 1, 'b': 'x'}",
+		},
+		{
+			"inside ARRAY_AGG (trait materialization shape)",
+			"SELECT ARRAY_AGG(STRUCT(o AS v)) FROM t",
+			"SELECT list({'v': o}) FROM t",
+		},
+		{
+			"cast inside arg keeps inner AS",
+			"SELECT STRUCT(CAST(x AS INT64) AS y)",
+			"SELECT {'y': CAST(x AS BIGINT)}",
+		},
+		{
+			"unnamed column refs use trailing segment",
+			"SELECT STRUCT(col1, t.col2) FROM t",
+			"SELECT {'col1': col1, 'col2': t.col2} FROM t",
+		},
+		{
+			"unnamed expressions get synthesized names",
+			"SELECT STRUCT(1, 2)",
+			"SELECT {'f0_': 1, 'f1_': 2}",
+		},
+		{
+			"nested function call in named field",
+			"SELECT STRUCT(LOWER(name) AS lname, age + 1 AS next_age) FROM t",
+			"SELECT {'lname': LOWER(name), 'next_age': age + 1} FROM t",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
