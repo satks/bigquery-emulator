@@ -553,3 +553,43 @@ func TestTranslator_Translate_NoStripNonProjectBacktick(t *testing.T) {
 		t.Errorf("result %q missing table", result)
 	}
 }
+
+func TestTranslator_Translate_StartsWith(t *testing.T) {
+	tr := NewTranslator()
+	// Regression: STARTS_WITH -> starts_with output re-matches the
+	// case-insensitive pattern; the old loop restarted from index 0 and hung.
+	result, err := tr.Translate("SELECT STARTS_WITH(name, 'a') FROM t")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	expected := "SELECT starts_with(name, 'a') FROM t"
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
+}
+
+func TestTranslator_Translate_RegexpExtract_SameNameRename(t *testing.T) {
+	tr := NewTranslator()
+	result, err := tr.Translate(`SELECT REGEXP_EXTRACT(s, 'p.*') FROM t`)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	expected := `SELECT regexp_extract(s, 'p.*') FROM t`
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
+}
+
+func TestTranslator_Translate_NestedSameFunction(t *testing.T) {
+	tr := NewTranslator()
+	// Nested calls of the same function must both be rewritten even though
+	// the search cursor skips past each replacement.
+	result, err := tr.Translate("SELECT IFNULL(IFNULL(a, b), c) FROM t")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	expected := "SELECT COALESCE(COALESCE(a, b), c) FROM t"
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
+}

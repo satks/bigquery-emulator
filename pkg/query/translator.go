@@ -272,42 +272,73 @@ func (t *Translator) translateFunctions(sql string) string {
 	for bqName, translation := range t.funcRegistry.functions {
 		// Build a case-insensitive pattern for the function name followed by (
 		pattern := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(bqName) + `\s*\(`)
-
-		for {
-			loc := pattern.FindStringIndex(result)
-			if loc == nil {
-				break
-			}
-
-			// Find the matching closing parenthesis
-			openIdx := strings.Index(result[loc[0]:], "(")
-			if openIdx < 0 {
-				break
-			}
-			argsStart := loc[0] + openIdx + 1
-			closeIdx := findMatchingParen(result, loc[0]+openIdx)
-			if closeIdx < 0 {
-				break
-			}
-
-			args := result[argsStart:closeIdx]
-			var replacement string
-
-			if translation.DuckDBName != "" {
-				// Simple rename: replace function name, keep args
-				replacement = translation.DuckDBName + "(" + args + ")"
-			} else if translation.Handler != nil {
-				// Handler-based: let handler produce the full replacement
-				replacement = translation.Handler(args)
-			} else {
-				break // should not happen
-			}
-
-			result = result[:loc[0]] + replacement + result[closeIdx+1:]
-		}
+		result = replaceFunctionCalls(result, pattern, translation)
 	}
 
 	return result
+}
+
+// replaceFunctionCalls rewrites every call matching pattern using the given
+// translation. The search resumes after each replacement instead of restarting
+// from the beginning: translations whose output still matches the pattern
+// (STARTS_WITH -> starts_with, MD5 -> unhex(md5(...))) would otherwise loop
+// forever. Arguments are rewritten recursively first so nested calls of the
+// same function (IFNULL(IFNULL(a, b), c)) are still translated.
+func replaceFunctionCalls(sql string, pattern *regexp.Regexp, translation FunctionTranslation) string {
+	result := sql
+	from := 0
+
+	for from < len(result) {
+		loc := pattern.FindStringIndex(result[from:])
+		if loc == nil {
+			break
+		}
+		start := from + loc[0]
+
+		// The \b in the pattern is evaluated against the substring, so a match
+		// at the cursor is a false positive if the preceding char is a word char.
+		if start > 0 && isWordChar(result[start-1]) {
+			from = start + 1
+			continue
+		}
+
+		// Find the matching closing parenthesis
+		openIdx := strings.Index(result[start:], "(")
+		if openIdx < 0 {
+			break
+		}
+		argsStart := start + openIdx + 1
+		closeIdx := findMatchingParen(result, start+openIdx)
+		if closeIdx < 0 {
+			break
+		}
+
+		args := replaceFunctionCalls(result[argsStart:closeIdx], pattern, translation)
+		var replacement string
+
+		if translation.DuckDBName != "" {
+			// Simple rename: replace function name, keep args
+			replacement = translation.DuckDBName + "(" + args + ")"
+		} else if translation.Handler != nil {
+			// Handler-based: let handler produce the full replacement
+			replacement = translation.Handler(args)
+		} else {
+			break // should not happen
+		}
+
+		result = result[:start] + replacement + result[closeIdx+1:]
+		from = start + len(replacement)
+	}
+
+	return result
+}
+
+// isWordChar reports whether c is a regex word character ([0-9A-Za-z_]).
+func isWordChar(c byte) bool {
+	return c == '_' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z')
 }
 
 // findMatchingParen finds the index of the closing parenthesis matching the
