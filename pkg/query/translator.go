@@ -48,6 +48,11 @@ var (
 
 	// arrayTypeRe matches ARRAY<TYPE> to convert to DuckDB TYPE[] syntax.
 	arrayTypeRe = regexp.MustCompile(`(?i)\bARRAY\s*<\s*(\w+)\s*>`)
+
+	// starExceptRe matches BQ's select-list `* EXCEPT(cols)` (also `t.* EXCEPT(...)`).
+	// Anchored on the asterisk so the EXCEPT set operation
+	// (SELECT a FROM t1 EXCEPT SELECT a FROM t2) never matches.
+	starExceptRe = regexp.MustCompile(`(?i)(\*\s*)EXCEPT\s*\(`)
 )
 
 // ddlTypeReplacement maps a BQ-only type name to its DuckDB equivalent via regex.
@@ -235,7 +240,10 @@ func (t *Translator) Translate(sql string) (string, error) {
 		return match
 	})
 
-	// 12. Function translations via registry
+	// 12. SELECT * EXCEPT(cols) -> SELECT * EXCLUDE (cols)
+	result = starExceptRe.ReplaceAllString(result, "${1}EXCLUDE (")
+
+	// 13. Function translations via registry
 	result = t.translateFunctions(result)
 
 	return result, nil

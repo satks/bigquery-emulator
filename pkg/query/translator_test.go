@@ -689,3 +689,39 @@ func TestTranslator_Translate_COUNTIF(t *testing.T) {
 		t.Errorf("got %q, want %q", result, expected)
 	}
 }
+
+func TestTranslator_Translate_StarExcept(t *testing.T) {
+	tr := NewTranslator()
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"bare star",
+			"SELECT * EXCEPT(_pp_rn) FROM (SELECT 1 AS a, 2 AS _pp_rn)",
+			"SELECT * EXCLUDE (_pp_rn) FROM (SELECT 1 AS a, 2 AS _pp_rn)",
+		},
+		{
+			"aliased star multiple cols",
+			"SELECT t.* EXCEPT(a, b) FROM t",
+			"SELECT t.* EXCLUDE (a, b) FROM t",
+		},
+		{
+			"set operation untouched",
+			"SELECT a FROM t1 EXCEPT SELECT a FROM t2",
+			"SELECT a FROM t1 EXCEPT SELECT a FROM t2",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tr.Translate(tc.input)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("got %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
