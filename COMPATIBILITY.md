@@ -2,6 +2,8 @@
 
 What this emulator supports, what it translates, and what it deliberately does not do. If you're evaluating whether your queries will run: the SQL below is verified by automated tests against real client SDKs.
 
+A machine-readable description of the REST surface lives in [openapi.yaml](openapi.yaml) — keep the two in sync when support status changes.
+
 ## REST API v2 endpoints
 
 | Area | Endpoints | Status |

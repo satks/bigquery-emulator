@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#1a2233"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4285f4"/>
+      <stop offset="1" stop-color="#fbbc05"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#ffffff" stroke-opacity="0.04">
+    <path d="M0 160 H1280 M0 320 H1280 M0 480 H1280"/>
+    <path d="M320 0 V640 M640 0 V640 M960 0 V640"/>
+  </g>
+
+  <!-- accent bar -->
+  <rect x="96" y="120" width="72" height="10" rx="5" fill="url(#accent)"/>
+
+  <text x="96" y="222" font-family="Helvetica, Arial, sans-serif" font-size="76" font-weight="700" fill="#f0f6fc">BigQuery Emulator</text>
+  <text x="96" y="290" font-family="Helvetica, Arial, sans-serif" font-size="34" fill="#9aa7b8">Local Google Cloud BigQuery on DuckDB</text>
+
+  <text x="96" y="360" font-family="Helvetica, Arial, sans-serif" font-size="26" fill="#c8d2de">REST API v2  ·  BigQuery SQL → DuckDB  ·  Go &amp; Node.js SDK compatible</text>
+
+  <!-- chips -->
+  <g font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600">
+    <rect x="96" y="408" width="208" height="52" rx="26" fill="#4285f4" fill-opacity="0.16" stroke="#4285f4" stroke-opacity="0.6"/>
+    <text x="200" y="442" text-anchor="middle" fill="#7ab0ff">offline · no GCP</text>
+    <rect x="324" y="408" width="178" height="52" rx="26" fill="#34a853" fill-opacity="0.16" stroke="#34a853" stroke-opacity="0.6"/>
+    <text x="413" y="442" text-anchor="middle" fill="#6fd089">CI / Docker</text>
+    <rect x="522" y="408" width="248" height="52" rx="26" fill="#fbbc05" fill-opacity="0.14" stroke="#fbbc05" stroke-opacity="0.55"/>
+    <text x="646" y="442" text-anchor="middle" fill="#ffd866">single Go binary</text>
+  </g>
+
+  <!-- terminal card -->
+  <g>
+    <rect x="836" y="396" width="372" height="150" rx="14" fill="#0a0e14" stroke="#2a3445"/>
+    <circle cx="866" cy="426" r="6" fill="#ff5f57"/>
+    <circle cx="888" cy="426" r="6" fill="#febc2e"/>
+    <circle cx="910" cy="426" r="6" fill="#28c840"/>
+    <text x="862" y="476" font-family="Menlo, monospace" font-size="19" fill="#8b98a9">$ docker run -p 9050:9050 \</text>
+    <text x="884" y="506" font-family="Menlo, monospace" font-size="19" fill="#8b98a9">ghcr.io/satks/bigquery-emulator</text>
+    <text x="862" y="534" font-family="Menlo, monospace" font-size="19" fill="#28c840">ready on :9050</text>
+  </g>
+
+  <text x="96" y="566" font-family="Menlo, monospace" font-size="24" fill="#6e7b8b">github.com/satks/bigquery-emulator</text>
+  <text x="96" y="600" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#4d5866">MIT · DuckDB-powered · 465 e2e tests passing</text>
+</svg>

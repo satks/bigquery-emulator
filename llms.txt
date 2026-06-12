@@ -14,6 +14,7 @@ Key facts:
 
 - [README](https://github.com/satks/bigquery-emulator/blob/main/README.md): features, quick start, SDK wiring, configuration flags, API endpoint list
 - [COMPATIBILITY](https://github.com/satks/bigquery-emulator/blob/main/COMPATIBILITY.md): full supported/unsupported matrix — SQL features, functions, REST endpoints, wire-format details
+- [openapi.yaml](https://github.com/satks/bigquery-emulator/blob/main/openapi.yaml): OpenAPI 3.0 spec of the implemented REST API (machine-readable; validated)
 - [AGENTS](https://github.com/satks/bigquery-emulator/blob/main/AGENTS.md): build/test/run commands and code-layout guide for AI coding agents
 - [ARCHITECTURE](https://github.com/satks/bigquery-emulator/blob/main/ARCHITECTURE.md): system layers, query flow, component responsibilities
 - [DESIGN_DECISIONS](https://github.com/satks/bigquery-emulator/blob/main/DESIGN_DECISIONS.md): why DuckDB, string-level translation, metadata-in-DuckDB, permission bypass mode

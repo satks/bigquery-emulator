@@ -1,0 +1,787 @@
+openapi: 3.0.3
+info:
+  title: BigQuery Emulator REST API
+  description: |
+    The subset of the Google BigQuery REST API v2 implemented by
+    [bigquery-emulator](https://github.com/satks/bigquery-emulator) (DuckDB backend),
+    plus the emulator's Storage API and utility endpoints.
+
+    Every route below is served under BOTH `/bigquery/v2` (standard prefix) and
+    `/` (bare — used by Node.js SDK with `BIGQUERY_EMULATOR_HOST`). Paths here
+    show the standard prefix once; mentally strip `/bigquery/v2` for the bare form.
+
+    Authentication is bypassed: any (or no) bearer token is accepted. A mock
+    OAuth2 token endpoint exists for SDKs that insist on a token exchange.
+
+    Maintained together with [COMPATIBILITY.md](https://github.com/satks/bigquery-emulator/blob/main/COMPATIBILITY.md);
+    SQL-dialect support is documented there, not here.
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://github.com/satks/bigquery-emulator/blob/main/LICENSE
+externalDocs:
+  description: README and compatibility matrix
+  url: https://github.com/satks/bigquery-emulator#readme
+servers:
+  - url: http://localhost:9050
+    description: Local emulator (default port)
+
+tags:
+  - name: projects
+  - name: datasets
+  - name: tables
+  - name: tabledata
+  - name: jobs
+  - name: queries
+  - name: storage
+    description: BigQuery Storage API subset (Arrow IPC)
+  - name: util
+
+paths:
+  /bigquery/v2/projects:
+    get:
+      tags: [projects]
+      summary: List projects (always the single configured project)
+      operationId: projects.list
+      responses:
+        '200':
+          description: Project list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectList' }
+
+  /bigquery/v2/projects/{projectId}:
+    get:
+      tags: [projects]
+      summary: Get the configured project
+      operationId: projects.get
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '200':
+          description: Project
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/datasets:
+    get:
+      tags: [datasets]
+      summary: List datasets
+      operationId: datasets.list
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/maxResults' }
+        - { $ref: '#/components/parameters/pageToken' }
+      responses:
+        '200':
+          description: Dataset list (with nextPageToken when paginated)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetList' }
+    post:
+      tags: [datasets]
+      summary: Create a dataset
+      operationId: datasets.insert
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Dataset' }
+      responses:
+        '200':
+          description: Created dataset
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bigquery/v2/projects/{projectId}/datasets/{datasetId}:
+    get:
+      tags: [datasets]
+      summary: Get a dataset
+      operationId: datasets.get
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+      responses:
+        '200':
+          description: Dataset
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [datasets]
+      summary: Patch a dataset
+      operationId: datasets.patch
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Dataset' }
+      responses:
+        '200':
+          description: Updated dataset
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [datasets]
+      summary: Delete a dataset
+      operationId: datasets.delete
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - name: deleteContents
+          in: query
+          schema: { type: boolean }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/datasets/{datasetId}/tables:
+    get:
+      tags: [tables]
+      summary: List tables
+      operationId: tables.list
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/maxResults' }
+        - { $ref: '#/components/parameters/pageToken' }
+      responses:
+        '200':
+          description: Table list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TableList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [tables]
+      summary: Create a table (nested and repeated fields supported)
+      operationId: tables.insert
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Table' }
+      responses:
+        '200':
+          description: Created table
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Table' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bigquery/v2/projects/{projectId}/datasets/{datasetId}/tables/{tableId}:
+    get:
+      tags: [tables]
+      summary: Get a table
+      operationId: tables.get
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      responses:
+        '200':
+          description: Table
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Table' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [tables]
+      summary: Patch a table
+      operationId: tables.patch
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Table' }
+      responses:
+        '200':
+          description: Updated table
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Table' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [tables]
+      summary: Delete a table
+      operationId: tables.delete
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/datasets/{datasetId}/tables/{tableId}/data:
+    get:
+      tags: [tabledata]
+      summary: List table rows (BigQuery wire format)
+      operationId: tabledata.list
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+        - { $ref: '#/components/parameters/maxResults' }
+        - { $ref: '#/components/parameters/pageToken' }
+      responses:
+        '200':
+          description: Rows in `{f:[{v:...}]}` form
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TableDataList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/datasets/{datasetId}/tables/{tableId}/insertAll:
+    post:
+      tags: [tabledata]
+      summary: Streaming insert
+      operationId: tabledata.insertAll
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TableDataInsertAllRequest' }
+      responses:
+        '200':
+          description: Per-row insert errors, if any
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TableDataInsertAllResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/jobs:
+    get:
+      tags: [jobs]
+      summary: List jobs
+      operationId: jobs.list
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/maxResults' }
+        - { $ref: '#/components/parameters/pageToken' }
+      responses:
+        '200':
+          description: Job list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobList' }
+    post:
+      tags: [jobs]
+      summary: Insert a job (query, load, extract — load/extract are no-op stubs)
+      operationId: jobs.insert
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Job' }
+      responses:
+        '200':
+          description: Created job (poll jobs.get until status.state == DONE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /bigquery/v2/projects/{projectId}/jobs/{jobId}:
+    get:
+      tags: [jobs]
+      summary: Get a job
+      operationId: jobs.get
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/jobId' }
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/jobs/{jobId}/cancel:
+    post:
+      tags: [jobs]
+      summary: Cancel a job
+      operationId: jobs.cancel
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/jobId' }
+      responses:
+        '200':
+          description: Cancel result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: '#/components/schemas/Job' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/queries:
+    post:
+      tags: [queries]
+      summary: Run a query synchronously (BigQuery SQL, translated to DuckDB)
+      operationId: jobs.query
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QueryRequest' }
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bigquery/v2/projects/{projectId}/queries/{jobId}:
+    get:
+      tags: [queries]
+      summary: Get query results for a job
+      operationId: jobs.getQueryResults
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/jobId' }
+        - { $ref: '#/components/parameters/maxResults' }
+        - { $ref: '#/components/parameters/pageToken' }
+      responses:
+        '200':
+          description: Query results (jobComplete=false while running)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/projects/{projectId}/datasets/{datasetId}/tables/{tableId}:createReadSession:
+    post:
+      tags: [storage]
+      summary: Create a Storage API read session
+      operationId: storage.createReadSession
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      responses:
+        '200':
+          description: Read session with stream names, Arrow schema, row count
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/readStreams/{streamName}:readRows:
+    get:
+      tags: [storage]
+      summary: Read rows from a stream as Arrow IPC
+      operationId: storage.readRows
+      parameters:
+        - name: streamName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Arrow IPC stream
+          content:
+            application/vnd.apache.arrow.stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/projects/{projectId}/datasets/{datasetId}/tables/{tableId}:createWriteStream:
+    post:
+      tags: [storage]
+      summary: Create a Storage API write stream
+      operationId: storage.createWriteStream
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { $ref: '#/components/parameters/datasetId' }
+        - { $ref: '#/components/parameters/tableId' }
+      responses:
+        '200':
+          description: Write stream
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/writeStreams/{streamName}:appendRows:
+    post:
+      tags: [storage]
+      summary: Append rows to a write stream (JSON rows)
+      operationId: storage.appendRows
+      parameters:
+        - name: streamName
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: Append result
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /health:
+    get:
+      tags: [util]
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: '`{"status":"ok"}`'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /token:
+    post:
+      tags: [util]
+      summary: Mock OAuth2 token endpoint (accepts any assertion)
+      operationId: token
+      responses:
+        '200':
+          description: Dummy bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string, example: emulator-token }
+                  token_type: { type: string, example: Bearer }
+                  expires_in: { type: integer, example: 3600 }
+
+components:
+  parameters:
+    projectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string }
+    datasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema: { type: string }
+    tableId:
+      name: tableId
+      in: path
+      required: true
+      schema: { type: string }
+    jobId:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string }
+    maxResults:
+      name: maxResults
+      in: query
+      schema: { type: integer }
+    pageToken:
+      name: pageToken
+      in: query
+      description: Opaque base64 page token from a previous response
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Resource not found (non-retryable, BigQuery error envelope)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BadRequest:
+      description: Invalid request or SQL error (BigQuery error envelope)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: Resource already exists
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: integer, example: 404 }
+            message: { type: string }
+            status: { type: string, example: NOT_FOUND }
+            errors:
+              type: array
+              items:
+                type: object
+                properties:
+                  domain: { type: string, example: global }
+                  reason: { type: string, example: notFound }
+                  message: { type: string }
+
+    Project:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#project }
+        id: { type: string }
+        projectReference:
+          type: object
+          properties:
+            projectId: { type: string }
+        friendlyName: { type: string }
+
+    ProjectList:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#projectList }
+        projects:
+          type: array
+          items: { $ref: '#/components/schemas/Project' }
+        totalItems: { type: integer }
+
+    Dataset:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#dataset }
+        id: { type: string, description: 'projectId:datasetId' }
+        etag: { type: string }
+        datasetReference:
+          type: object
+          required: [datasetId]
+          properties:
+            projectId: { type: string }
+            datasetId: { type: string }
+        location: { type: string, example: US }
+        friendlyName: { type: string }
+        description: { type: string }
+        creationTime: { type: string, description: 'epoch millis' }
+        lastModifiedTime: { type: string, description: 'epoch millis' }
+
+    DatasetList:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#datasetList }
+        datasets:
+          type: array
+          items: { $ref: '#/components/schemas/Dataset' }
+        nextPageToken: { type: string }
+
+    TableFieldSchema:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [STRING, BYTES, INTEGER, INT64, FLOAT, FLOAT64, BOOLEAN, BOOL,
+                 TIMESTAMP, DATE, TIME, DATETIME, NUMERIC, BIGNUMERIC, JSON,
+                 GEOGRAPHY, RECORD, STRUCT]
+        mode:
+          type: string
+          enum: [NULLABLE, REQUIRED, REPEATED]
+          default: NULLABLE
+        fields:
+          type: array
+          description: Nested fields for RECORD/STRUCT
+          items: { $ref: '#/components/schemas/TableFieldSchema' }
+
+    TableSchema:
+      type: object
+      properties:
+        fields:
+          type: array
+          items: { $ref: '#/components/schemas/TableFieldSchema' }
+
+    Table:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#table }
+        id: { type: string, description: 'projectId:datasetId.tableId' }
+        etag: { type: string }
+        tableReference:
+          type: object
+          required: [datasetId, tableId]
+          properties:
+            projectId: { type: string }
+            datasetId: { type: string }
+            tableId: { type: string }
+        schema: { $ref: '#/components/schemas/TableSchema' }
+        type: { type: string, example: TABLE }
+        numRows: { type: string }
+        creationTime: { type: string }
+        lastModifiedTime: { type: string }
+
+    TableList:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#tableList }
+        tables:
+          type: array
+          items: { $ref: '#/components/schemas/Table' }
+        nextPageToken: { type: string }
+        totalItems: { type: integer }
+
+    Row:
+      type: object
+      description: 'BigQuery wire-format row: {"f":[{"v": <value>}, ...]}'
+      properties:
+        f:
+          type: array
+          items:
+            type: object
+            properties:
+              v:
+                description: String-encoded value (TIMESTAMP = epoch micros,
+                  BYTES = base64, BOOL = "true"/"false", JSON = JSON text,
+                  arrays = nested [{"v":...}])
+
+    TableDataList:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#tableDataList }
+        totalRows: { type: string }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/Row' }
+        pageToken: { type: string }
+
+    TableDataInsertAllRequest:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#tableDataInsertAllRequest }
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              insertId: { type: string }
+              json:
+                type: object
+                additionalProperties: true
+
+    TableDataInsertAllResponse:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#tableDataInsertAllResponse }
+        insertErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              errors:
+                type: array
+                items: { type: object }
+
+    JobConfigurationQuery:
+      type: object
+      properties:
+        query: { type: string }
+        useLegacySql: { type: boolean, description: must be false }
+
+    Job:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#job }
+        id: { type: string }
+        etag: { type: string }
+        jobReference:
+          type: object
+          properties:
+            projectId: { type: string }
+            jobId: { type: string }
+            location: { type: string, example: US }
+        configuration:
+          type: object
+          properties:
+            query: { $ref: '#/components/schemas/JobConfigurationQuery' }
+            load: { type: object, description: 'accepted, no-op stub' }
+            extract: { type: object, description: 'accepted, no-op stub' }
+        status:
+          type: object
+          properties:
+            state: { type: string, enum: [PENDING, RUNNING, DONE] }
+            errorResult: { type: object }
+            errors:
+              type: array
+              items: { type: object }
+        statistics: { type: object }
+
+    JobList:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#jobList }
+        jobs:
+          type: array
+          items: { $ref: '#/components/schemas/Job' }
+        nextPageToken: { type: string }
+
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        kind: { type: string, example: bigquery#queryRequest }
+        query: { type: string, example: "SELECT 1 AS x" }
+        useLegacySql: { type: boolean, description: 'must be false', example: false }
+        maxResults: { type: integer }
+        timeoutMs: { type: integer }
+        queryParameters:
+          type: array
+          items: { type: object }
+
+    QueryResponse:
+      type: object
+      properties:
+        kind: { type: string, example: bigquery#queryResponse }
+        schema: { $ref: '#/components/schemas/TableSchema' }
+        jobReference:
+          type: object
+          properties:
+            projectId: { type: string }
+            jobId: { type: string }
+        totalRows: { type: string }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/Row' }
+        jobComplete: { type: boolean }
+        cacheHit: { type: boolean }
+        pageToken: { type: string }
+        numDmlAffectedRows: { type: string }
+        errors:
+          type: array
+          items: { type: object }

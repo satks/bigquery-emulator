@@ -168,6 +168,7 @@ By default it's in-memory. Pass `--database=/path/file.duckdb` for persistence a
 ## Documentation
 
 - [COMPATIBILITY.md](COMPATIBILITY.md) — supported SQL, functions, endpoints, and known divergences
+- [openapi.yaml](openapi.yaml) — OpenAPI 3.0 spec of the implemented REST API surface
 - [AGENTS.md](AGENTS.md) — build/test/run guide for AI coding agents (and humans)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — system layers, data flow, component details
 - [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) — key technical decisions with rationale
